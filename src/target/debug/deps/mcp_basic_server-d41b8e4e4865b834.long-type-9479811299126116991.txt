@@ -1,0 +1,2 @@
+(rmcp::model::Prompt, for<'a> fn(&'a counter::Counter, Parameters<ExamplePromptArgs>, rmcp::service::RequestContext<RoleServer>) -> Pin<Box<(dyn Future<Output = Result<Vec<rmcp::model::PromptMessage>, ErrorData>> + Send + 'a)>> {counter::Counter::example_prompt})
+(rmcp::model::Prompt, for<'a> fn(&'a counter::Counter, Parameters<ExamplePromptArgs>, rmcp::service::RequestContext<RoleServer>) -> Pin<Box<(dyn Future<Output = Result<Vec<rmcp::model::PromptMessage>, ErrorData>> + Send + 'a)>> {counter::Counter::example_prompt}): IntoPromptRoute<_, _>
