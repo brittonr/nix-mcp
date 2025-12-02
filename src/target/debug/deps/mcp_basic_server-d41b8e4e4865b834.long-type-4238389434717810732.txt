@@ -1,2 +1,0 @@
-(rmcp::model::Prompt, for<'a> fn(&'a counter::Counter, Parameters<CounterAnalysisArgs>, rmcp::service::RequestContext<RoleServer>) -> Pin<Box<(dyn Future<Output = Result<rmcp::model::GetPromptResult, ErrorData>> + Send + 'a)>> {counter::Counter::counter_analysis})
-(rmcp::model::Prompt, for<'a> fn(&'a counter::Counter, Parameters<CounterAnalysisArgs>, rmcp::service::RequestContext<RoleServer>) -> Pin<Box<(dyn Future<Output = Result<rmcp::model::GetPromptResult, ErrorData>> + Send + 'a)>> {counter::Counter::counter_analysis}): IntoPromptRoute<_, _>

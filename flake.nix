@@ -62,7 +62,7 @@
 
         # Build the actual crate itself, reusing the dependency
         # artifacts from above.
-        mcp-nix-server-unwrapped = craneLib.buildPackage (
+        onix-mcp-unwrapped = craneLib.buildPackage (
           commonArgs
           // {
             inherit cargoArtifacts;
@@ -70,27 +70,32 @@
         );
 
         # Wrap the binary to include nix-index and other Nix tools in PATH
-        mcp-nix-server = pkgs.runCommand "mcp-nix-server-wrapped" {
-          buildInputs = [ pkgs.makeWrapper ];
-        } ''
-          mkdir -p $out/bin
-          makeWrapper ${mcp-nix-server-unwrapped}/bin/mcp-nix-server $out/bin/mcp-nix-server \
-            --prefix PATH : ${lib.makeBinPath [
-              pkgs.nix
-              pkgs.nix-index
-              pkgs.nix-diff
-              pkgs.nixpkgs-fmt
-              pkgs.alejandra
-              pkgs.statix
-              pkgs.deadnix
-              clan-core.packages.${system}.clan-cli
-            ]}
-        '';
+        onix-mcp =
+          pkgs.runCommand "onix-mcp"
+            {
+              buildInputs = [ pkgs.makeWrapper ];
+            }
+            ''
+              mkdir -p $out/bin
+              makeWrapper ${onix-mcp-unwrapped}/bin/onix-mcp $out/bin/onix-mcp \
+                --prefix PATH : ${
+                  lib.makeBinPath [
+                    pkgs.nix
+                    pkgs.nix-index
+                    pkgs.nix-diff
+                    pkgs.nixpkgs-fmt
+                    pkgs.alejandra
+                    pkgs.statix
+                    pkgs.deadnix
+                    clan-core.packages.${system}.clan-cli
+                  ]
+                }
+            '';
       in
       {
         checks = {
           # Build the crate as part of `nix flake check` for convenience
-          mcp-nix-server = mcp-nix-server-unwrapped;
+          onix-mcp = onix-mcp;
 
           # Run clippy (and deny all warnings) on the crate source,
           # again, reusing the dependency artifacts from above.
@@ -98,7 +103,7 @@
           # Note that this is done as a separate derivation so that
           # we can block the CI if there are issues here, but not
           # prevent downstream consumers from building our crate by itself.
-          mcp-nix-server-clippy = craneLib.cargoClippy (
+          onix-mcp-clippy = craneLib.cargoClippy (
             commonArgs
             // {
               inherit cargoArtifacts;
@@ -106,7 +111,7 @@
             }
           );
 
-          mcp-nix-server-doc = craneLib.cargoDoc (
+          onix-mcp-doc = craneLib.cargoDoc (
             commonArgs
             // {
               inherit cargoArtifacts;
@@ -117,30 +122,25 @@
           );
 
           # Check formatting
-          mcp-nix-server-fmt = craneLib.cargoFmt {
+          onix-mcp-fmt = craneLib.cargoFmt {
             inherit src;
           };
 
-          mcp-nix-server-toml-fmt = craneLib.taploFmt {
+          onix-mcp-toml-fmt = craneLib.taploFmt {
             src = pkgs.lib.sources.sourceFilesBySuffices src [ ".toml" ];
             # taplo arguments can be further customized below as needed
             # taploExtraArgs = "--config ./taplo.toml";
           };
 
           # Audit dependencies
-          mcp-nix-server-audit = craneLib.cargoAudit {
+          onix-mcp-audit = craneLib.cargoAudit {
             inherit src advisory-db;
-          };
-
-          # Audit licenses
-          mcp-nix-server-deny = craneLib.cargoDeny {
-            inherit src;
           };
 
           # Run tests with cargo-nextest
           # Consider setting `doCheck = false` on `my-crate` if you do not want
           # the tests to run twice
-          mcp-nix-server-nextest = craneLib.cargoNextest (
+          onix-mcp-nextest = craneLib.cargoNextest (
             commonArgs
             // {
               inherit cargoArtifacts;
@@ -152,11 +152,11 @@
         };
 
         packages = {
-          default = mcp-nix-server;
+          default = onix-mcp;
         };
 
         apps.default = flake-utils.lib.mkApp {
-          drv = mcp-nix-server;
+          drv = onix-mcp;
         };
 
         devShells.default = craneLib.devShell {

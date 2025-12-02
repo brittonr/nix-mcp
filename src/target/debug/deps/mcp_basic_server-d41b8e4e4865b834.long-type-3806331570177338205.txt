@@ -1,2 +1,0 @@
-(Tool, for<'a> fn(&'a counter::Counter, Parameters<StructRequest>) -> Result<rmcp::model::CallToolResult, ErrorData> {counter::Counter::sum})
-(Tool, for<'a> fn(&'a counter::Counter, Parameters<StructRequest>) -> Result<rmcp::model::CallToolResult, ErrorData> {counter::Counter::sum}): IntoToolRoute<counter::Counter, _>

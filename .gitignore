@@ -1,2 +1,14 @@
 /target
+/src/target
 result*
+/result
+.direnv/
+/rmcp-openapi
+/rust-sdk
+/servers
+
+# Editor and OS artifacts
+*.swp
+*.swo
+*~
+.DS_Store

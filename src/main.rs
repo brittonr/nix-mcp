@@ -1,7 +1,7 @@
 use anyhow::Result;
 use common::nix_server::NixServer;
-use rmcp::ServiceExt;
 use rmcp::transport::stdio;
+use rmcp::ServiceExt;
 use tracing_subscriber::{self, EnvFilter};
 mod common;
 

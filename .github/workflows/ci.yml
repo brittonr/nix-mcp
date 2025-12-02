@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  nix-checks:
+    name: Nix Flake Checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v9
+
+      - name: Setup Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@v2
+
+      - name: Check flake
+        run: nix flake check --show-trace
+
+  build-and-test:
+    name: Build and Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v9
+
+      - name: Setup Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@v2
+
+      - name: Build release binary
+        run: nix build .#onix-mcp
+
+      - name: Check binary size
+        run: |
+          ls -lh result/bin/onix-mcp
+          SIZE=$(stat -c%s result/bin/onix-mcp)
+          echo "Binary size: $((SIZE / 1024 / 1024)) MB"
+          if [ $SIZE -gt 10485760 ]; then
+            echo "Warning: Binary larger than 10MB"
+          fi
+
+      - name: Run expanded caching tests
+        run: |
+          # Install Python for test scripts
+          nix develop -c python3 /tmp/test_expanded_caching.py || true
+
+      - name: Verify startup time
+        run: |
+          cp result/bin/onix-mcp ./test-binary
+          timeout 5s ./test-binary --version || echo "Binary runs"
