@@ -581,6 +581,58 @@ pub struct ClanVmCreateArgs {
     pub flake: Option<String>,
 }
 
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ClanMachineBuildArgs {
+    /// Machine name to build
+    pub machine: String,
+    /// Optional flake directory path
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub flake: Option<String>,
+    /// Use nom for better build output (if available)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub use_nom: Option<bool>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct NixosBuildArgs {
+    /// Machine configuration name to build
+    pub machine: String,
+    /// Optional flake reference (defaults to current directory)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub flake: Option<String>,
+    /// Use nom for better build output (if available)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub use_nom: Option<bool>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ClanAnalyzeSecretsArgs {
+    /// Optional flake directory path
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub flake: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ClanAnalyzeVarsArgs {
+    /// Optional flake directory path
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub flake: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ClanAnalyzeTagsArgs {
+    /// Optional flake directory path
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub flake: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ClanAnalyzeRosterArgs {
+    /// Optional flake directory path
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub flake: Option<String>,
+}
+
 // Prompt argument types
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct SetupDevEnvironmentArgs {
@@ -846,39 +898,45 @@ impl NixServer {
         // Execute with security features (audit logging + timeout)
         audit_tool_execution(&self.audit, "search_options", Some(serde_json::json!({"query": &query})), || async {
             with_timeout(&self.audit, "search_options", 30, || async {
-                    // Use nix-instantiate to search options if available, or provide helpful info
-                    let output = tokio::process::Command::new("nix")
-                        .args([
-                            "search",
-                            "--extra-experimental-features", "nix-command",
-                            "--extra-experimental-features", "flakes",
-                            &format!("nixos-options#{}", query)
-                        ])
+                    // Check if we're on NixOS and can query options directly
+                    let nixos_check = tokio::process::Command::new("sh")
+                        .arg("-c")
+                        .arg("test -f /etc/NIXOS")
                         .output()
                         .await;
 
-                    match output {
-                        Ok(output) => {
-                            let stdout = String::from_utf8_lossy(&output.stdout);
-                            let stderr = String::from_utf8_lossy(&output.stderr);
+                    let on_nixos = nixos_check.map(|o| o.status.success()).unwrap_or(false);
 
-                            if !output.status.success() {
-                                // Fallback to providing helpful information
-                                Ok(CallToolResult::success(vec![Content::text(format!(
-                                    "Note: Direct option search requires NixOS. Search for '{}' at:\n- https://search.nixos.org/options\n- https://nixos.org/manual/nixos/stable/options.html\n\nError: {}",
-                                    query, stderr
-                                ))]))
-                            } else {
-                                Ok(CallToolResult::success(vec![Content::text(stdout.to_string())]))
+                    if on_nixos {
+                        // Try to search using nixos-option if available
+                        let output = tokio::process::Command::new("nixos-option")
+                            .arg(&query)
+                            .output()
+                            .await;
+
+                        if let Ok(output) = output {
+                            if output.status.success() {
+                                let stdout = String::from_utf8_lossy(&output.stdout);
+                                return Ok(CallToolResult::success(vec![Content::text(stdout.to_string())]));
                             }
                         }
-                        Err(_) => {
-                            Ok(CallToolResult::success(vec![Content::text(format!(
-                                "Search for NixOS options containing '{}':\n- https://search.nixos.org/options?query={}\n- https://nixos.org/manual/nixos/stable/options.html",
-                                query, query
-                            ))]))
-                        }
                     }
+
+                    // Provide helpful information with web search links
+                    // Simple URL encoding for the query
+                    let encoded_query = query.replace(' ', "%20").replace('.', "%2E");
+                    let search_url = format!("https://search.nixos.org/options?channel=unstable&query={}", encoded_query);
+
+                    Ok(CallToolResult::success(vec![Content::text(format!(
+                        "NixOS option search for '{}':\n\n\
+                        Search online:\n\
+                        - {}\n\
+                        - https://nixos.org/manual/nixos/stable/options.html\n\n\
+                        On NixOS systems, you can also use:\n\
+                        - nixos-option {}\n\
+                        - man configuration.nix",
+                        query, search_url, query
+                    ))]))
             }).await
         }).await
     }
@@ -3622,6 +3680,283 @@ Example: ecosystem_tools(tool="comma") or ecosystem_tools(tool="crane")"#
     }
 
     #[tool(
+        description = "Build a Clan machine configuration locally for testing without deployment"
+    )]
+    async fn clan_machine_build(
+        &self,
+        Parameters(ClanMachineBuildArgs {
+            machine,
+            flake,
+            use_nom,
+        }): Parameters<ClanMachineBuildArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        use crate::common::security::helpers::{audit_tool_execution, with_timeout};
+        let flake_str = flake.unwrap_or_else(|| ".".to_string());
+
+        audit_tool_execution(&self.audit, "clan_machine_build", Some(serde_json::json!({"machine": &machine, "flake": &flake_str})), || async {
+            with_timeout(&self.audit, "clan_machine_build", 300, || async {
+                let use_nom = use_nom.unwrap_or(false);
+                let build_target = format!(".#nixosConfigurations.{}.config.system.build.toplevel", machine);
+
+                let mut cmd = if use_nom {
+                    // Check if nom is available
+                    let nom_check = tokio::process::Command::new("which")
+                        .arg("nom")
+                        .output()
+                        .await;
+
+                    if nom_check.is_ok() && nom_check.unwrap().status.success() {
+                        let mut c = tokio::process::Command::new("nom");
+                        c.args(["build", &build_target]);
+                        c
+                    } else {
+                        let mut c = tokio::process::Command::new("nix");
+                        c.args(["build", &build_target]);
+                        c
+                    }
+                } else {
+                    let mut c = tokio::process::Command::new("nix");
+                    c.args(["build", &build_target]);
+                    c
+                };
+
+                cmd.current_dir(&flake_str);
+
+                let output = cmd.output()
+                    .await
+                    .map_err(|e| McpError::internal_error(format!("Failed to execute build command: {}", e), None))?;
+
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let stderr = String::from_utf8_lossy(&output.stderr);
+
+                if !output.status.success() {
+                    return Ok(CallToolResult::success(vec![Content::text(
+                        format!("Build failed for machine '{}':\n\n{}{}", machine, stdout, stderr)
+                    )]));
+                }
+
+                Ok(CallToolResult::success(vec![Content::text(
+                    format!("Successfully built machine '{}' configuration.\n\n{}{}\n\nThe build result is in ./result/", machine, stdout, stderr)
+                )]))
+            }).await
+        }).await
+    }
+
+    #[tool(
+        description = "Build a NixOS machine configuration from a flake"
+    )]
+    async fn nixos_build(
+        &self,
+        Parameters(NixosBuildArgs {
+            machine,
+            flake,
+            use_nom,
+        }): Parameters<NixosBuildArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        use crate::common::security::helpers::{audit_tool_execution, with_timeout};
+        let flake_str = flake.unwrap_or_else(|| ".".to_string());
+
+        audit_tool_execution(&self.audit, "nixos_build", Some(serde_json::json!({"machine": &machine, "flake": &flake_str})), || async {
+            with_timeout(&self.audit, "nixos_build", 300, || async {
+                let use_nom = use_nom.unwrap_or(false);
+                let build_target = format!("{}#nixosConfigurations.{}.config.system.build.toplevel", flake_str, machine);
+
+                let mut cmd = if use_nom {
+                    // Check if nom is available
+                    let nom_check = tokio::process::Command::new("which")
+                        .arg("nom")
+                        .output()
+                        .await;
+
+                    if nom_check.is_ok() && nom_check.unwrap().status.success() {
+                        let mut c = tokio::process::Command::new("nom");
+                        c.args(["build", &build_target]);
+                        c
+                    } else {
+                        let mut c = tokio::process::Command::new("nix");
+                        c.args(["build", &build_target]);
+                        c
+                    }
+                } else {
+                    let mut c = tokio::process::Command::new("nix");
+                    c.args(["build", &build_target]);
+                    c
+                };
+
+                let output = cmd.output()
+                    .await
+                    .map_err(|e| McpError::internal_error(format!("Failed to execute build command: {}", e), None))?;
+
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let stderr = String::from_utf8_lossy(&output.stderr);
+
+                if !output.status.success() {
+                    return Ok(CallToolResult::success(vec![Content::text(
+                        format!("Build failed for NixOS configuration '{}':\n\n{}{}", machine, stdout, stderr)
+                    )]));
+                }
+
+                Ok(CallToolResult::success(vec![Content::text(
+                    format!("Successfully built NixOS configuration '{}'.\n\n{}{}\n\nThe build result is in ./result/", machine, stdout, stderr)
+                )]))
+            }).await
+        }).await
+    }
+
+    #[tool(
+        description = "Analyze Clan secret (ACL) ownership across machines"
+    )]
+    async fn clan_analyze_secrets(
+        &self,
+        Parameters(ClanAnalyzeSecretsArgs { flake }): Parameters<ClanAnalyzeSecretsArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        use crate::common::security::helpers::{audit_tool_execution, with_timeout};
+        let flake_str = flake.unwrap_or_else(|| ".".to_string());
+
+        audit_tool_execution(&self.audit, "clan_analyze_secrets", Some(serde_json::json!({"flake": &flake_str})), || async {
+            with_timeout(&self.audit, "clan_analyze_secrets", 60, || async {
+                // Try local flake first, then fall back to onix-core
+                let mut cmd = tokio::process::Command::new("sh");
+                cmd.args(["-c", &format!(
+                    "cd {} && (nix run .#acl 2>/dev/null || nix run github:onixcomputer/onix-core#acl) 2>&1",
+                    flake_str
+                )]);
+
+                let output = cmd.output()
+                    .await
+                    .map_err(|e| McpError::internal_error(format!("Failed to execute acl command: {}", e), None))?;
+
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let stderr = String::from_utf8_lossy(&output.stderr);
+
+                if !output.status.success() {
+                    return Ok(CallToolResult::success(vec![Content::text(
+                        format!("ACL analysis failed.\n\nError:\n{}{}", stdout, stderr)
+                    )]));
+                }
+
+                Ok(CallToolResult::success(vec![Content::text(
+                    format!("Clan Secret (ACL) Ownership Analysis:\n\n{}{}", stdout, stderr)
+                )]))
+            }).await
+        }).await
+    }
+
+    #[tool(
+        description = "Analyze Clan vars ownership across machines"
+    )]
+    async fn clan_analyze_vars(
+        &self,
+        Parameters(ClanAnalyzeVarsArgs { flake }): Parameters<ClanAnalyzeVarsArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        use crate::common::security::helpers::{audit_tool_execution, with_timeout};
+        let flake_str = flake.unwrap_or_else(|| ".".to_string());
+
+        audit_tool_execution(&self.audit, "clan_analyze_vars", Some(serde_json::json!({"flake": &flake_str})), || async {
+            with_timeout(&self.audit, "clan_analyze_vars", 60, || async {
+                let mut cmd = tokio::process::Command::new("sh");
+                cmd.args(["-c", &format!(
+                    "cd {} && (nix run .#vars 2>/dev/null || nix run github:onixcomputer/onix-core#vars) 2>&1",
+                    flake_str
+                )]);
+
+                let output = cmd.output()
+                    .await
+                    .map_err(|e| McpError::internal_error(format!("Failed to execute vars command: {}", e), None))?;
+
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let stderr = String::from_utf8_lossy(&output.stderr);
+
+                if !output.status.success() {
+                    return Ok(CallToolResult::success(vec![Content::text(
+                        format!("Vars analysis failed.\n\nError:\n{}{}", stdout, stderr)
+                    )]));
+                }
+
+                Ok(CallToolResult::success(vec![Content::text(
+                    format!("Clan Vars Ownership Analysis:\n\n{}{}", stdout, stderr)
+                )]))
+            }).await
+        }).await
+    }
+
+    #[tool(
+        description = "Analyze Clan machine tags across the infrastructure"
+    )]
+    async fn clan_analyze_tags(
+        &self,
+        Parameters(ClanAnalyzeTagsArgs { flake }): Parameters<ClanAnalyzeTagsArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        use crate::common::security::helpers::{audit_tool_execution, with_timeout};
+        let flake_str = flake.unwrap_or_else(|| ".".to_string());
+
+        audit_tool_execution(&self.audit, "clan_analyze_tags", Some(serde_json::json!({"flake": &flake_str})), || async {
+            with_timeout(&self.audit, "clan_analyze_tags", 60, || async {
+                let mut cmd = tokio::process::Command::new("sh");
+                cmd.args(["-c", &format!(
+                    "cd {} && (nix run .#tags 2>/dev/null || nix run github:onixcomputer/onix-core#tags) 2>&1",
+                    flake_str
+                )]);
+
+                let output = cmd.output()
+                    .await
+                    .map_err(|e| McpError::internal_error(format!("Failed to execute tags command: {}", e), None))?;
+
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let stderr = String::from_utf8_lossy(&output.stderr);
+
+                if !output.status.success() {
+                    return Ok(CallToolResult::success(vec![Content::text(
+                        format!("Tags analysis failed.\n\nError:\n{}{}", stdout, stderr)
+                    )]));
+                }
+
+                Ok(CallToolResult::success(vec![Content::text(
+                    format!("Clan Machine Tags Analysis:\n\n{}{}", stdout, stderr)
+                )]))
+            }).await
+        }).await
+    }
+
+    #[tool(
+        description = "Analyze Clan user roster configurations"
+    )]
+    async fn clan_analyze_roster(
+        &self,
+        Parameters(ClanAnalyzeRosterArgs { flake }): Parameters<ClanAnalyzeRosterArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        use crate::common::security::helpers::{audit_tool_execution, with_timeout};
+        let flake_str = flake.unwrap_or_else(|| ".".to_string());
+
+        audit_tool_execution(&self.audit, "clan_analyze_roster", Some(serde_json::json!({"flake": &flake_str})), || async {
+            with_timeout(&self.audit, "clan_analyze_roster", 60, || async {
+                let mut cmd = tokio::process::Command::new("sh");
+                cmd.args(["-c", &format!(
+                    "cd {} && (nix run .#roster 2>/dev/null || nix run github:onixcomputer/onix-core#roster) 2>&1",
+                    flake_str
+                )]);
+
+                let output = cmd.output()
+                    .await
+                    .map_err(|e| McpError::internal_error(format!("Failed to execute roster command: {}", e), None))?;
+
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let stderr = String::from_utf8_lossy(&output.stderr);
+
+                if !output.status.success() {
+                    return Ok(CallToolResult::success(vec![Content::text(
+                        format!("Roster analysis failed.\n\nError:\n{}{}", stdout, stderr)
+                    )]));
+                }
+
+                Ok(CallToolResult::success(vec![Content::text(
+                    format!("Clan User Roster Analysis:\n\n{}{}", stdout, stderr)
+                )]))
+            }).await
+        }).await
+    }
+
+    #[tool(
         description = "Get help and information about Clan - the peer-to-peer NixOS management framework"
     )]
     fn clan_help(
@@ -3664,6 +3999,7 @@ Machine Management:
 - clan_machine_update - Update/deploy machine configurations
 - clan_machine_delete - Remove machine configurations
 - clan_machine_install - Install NixOS to a remote host (destructive!)
+- clan_machine_build - Build machine configuration locally for testing
 
 Backup Operations:
 - clan_backup_create - Create backups for machines
@@ -3676,8 +4012,15 @@ Flake & Project:
 Secrets:
 - clan_secrets_list - View configured secrets
 
-Testing:
+Testing & Building:
 - clan_vm_create - Create VMs for testing configurations
+- nixos_build - Build NixOS configurations from flakes
+
+Analysis Tools:
+- clan_analyze_secrets - Analyze secret (ACL) ownership across machines
+- clan_analyze_vars - Analyze vars ownership across machines
+- clan_analyze_tags - Analyze machine tags
+- clan_analyze_roster - Analyze user roster configurations
 
 COMMON WORKFLOWS:
 

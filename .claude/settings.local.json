@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "Bash(nix build:*)",
-      "WebFetch(domain:git.clan.lol)"
+      "WebFetch(domain:git.clan.lol)",
+      "Bash(nix develop:*)",
+      "Bash(git checkout:*)"
     ],
     "deny": [],
     "ask": []
