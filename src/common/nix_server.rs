@@ -923,20 +923,10 @@ impl NixServer {
                     }
 
                     // Provide helpful information with web search links
-                    // Simple URL encoding for the query
-                    let encoded_query = query.replace(' ', "%20").replace('.', "%2E");
-                    let search_url = format!("https://search.nixos.org/options?channel=unstable&query={}", encoded_query);
-
-                    Ok(CallToolResult::success(vec![Content::text(format!(
-                        "NixOS option search for '{}':\n\n\
-                        Search online:\n\
-                        - {}\n\
-                        - https://nixos.org/manual/nixos/stable/options.html\n\n\
-                        On NixOS systems, you can also use:\n\
-                        - nixos-option {}\n\
-                        - man configuration.nix",
-                        query, search_url, query
-                    ))]))
+                    use crate::common::nix_tools_helpers::format_option_search_response;
+                    Ok(CallToolResult::success(vec![Content::text(
+                        format_option_search_response(&query)
+                    )]))
             }).await
         }).await
     }

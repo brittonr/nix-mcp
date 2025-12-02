@@ -4,7 +4,8 @@
       "Bash(nix build:*)",
       "WebFetch(domain:git.clan.lol)",
       "Bash(nix develop:*)",
-      "Bash(git checkout:*)"
+      "Bash(git checkout:*)",
+      "Bash(git add:*)"
     ],
     "deny": [],
     "ask": []
