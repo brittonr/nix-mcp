@@ -195,3 +195,31 @@ pub struct PrefetchUrlArgs {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hash_format: Option<String>,
 }
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct FormatNixArgs {
+    /// Nix code to format
+    pub code: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ValidateNixArgs {
+    /// Nix code to validate
+    pub code: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct LintNixArgs {
+    /// Nix code to lint
+    pub code: String,
+    /// Which linters to run: "statix", "deadnix", or "both" (default: "both")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub linter: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct NixFmtArgs {
+    /// Path to format (file or directory, defaults to current directory)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+}
