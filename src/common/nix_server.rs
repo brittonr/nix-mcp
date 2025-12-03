@@ -33,66 +33,16 @@ use crate::process::{
     PueueLogArgs, PueuePauseArgs, PueueRemoveArgs, PueueStartArgs, PueueStatusArgs, PueueWaitArgs,
 };
 
+// Import clan types from clan module
+use crate::clan::{
+    ClanMachineBuildArgs, ClanMachineCreateArgs, ClanMachineDeleteArgs, ClanMachineInstallArgs,
+    ClanMachineListArgs, ClanMachineUpdateArgs,
+};
+
 // Import prompt types from prompts module
 use crate::prompts::{
     MigrateToFlakesArgs, OptimizeClosureArgs, SetupDevEnvironmentArgs, TroubleshootBuildArgs,
 };
-
-// Clan-specific argument types
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct ClanMachineCreateArgs {
-    /// Name of the machine to create
-    pub name: String,
-    /// Optional template to use (default: "new-machine")
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub template: Option<String>,
-    /// Optional target host address
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub target_host: Option<String>,
-    /// Optional flake directory path (default: current directory)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub flake: Option<String>,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct ClanMachineListArgs {
-    /// Optional flake directory path (default: current directory)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub flake: Option<String>,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct ClanMachineUpdateArgs {
-    /// Machines to update (empty for all)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub machines: Option<Vec<String>>,
-    /// Optional flake directory path
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub flake: Option<String>,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct ClanMachineDeleteArgs {
-    /// Name of the machine to delete
-    pub name: String,
-    /// Optional flake directory path
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub flake: Option<String>,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct ClanMachineInstallArgs {
-    /// Name of the machine to install
-    pub machine: String,
-    /// Target SSH host to install to
-    pub target_host: String,
-    /// Optional flake directory path
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub flake: Option<String>,
-    /// Confirm destructive operations (overwrites disk)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub confirm: Option<bool>,
-}
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct ClanBackupCreateArgs {
@@ -160,18 +110,6 @@ pub struct ClanVmCreateArgs {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct ClanMachineBuildArgs {
-    /// Machine name to build
-    pub machine: String,
-    /// Optional flake directory path
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub flake: Option<String>,
-    /// Use nom for better build output (if available)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub use_nom: Option<bool>,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct ClanAnalyzeSecretsArgs {
     /// Optional flake directory path
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -217,6 +155,7 @@ pub struct NixServer {
     develop_tools: Arc<crate::nix::DevelopTools>,
     flake_tools: Arc<crate::nix::FlakeTools>,
     quality_tools: Arc<crate::nix::QualityTools>,
+    machine_tools: Arc<crate::clan::MachineTools>,
     // Cache for expensive nix-locate queries (TTL: 5 minutes)
     locate_cache: Arc<TtlCache<String, String>>,
     // Cache for package search results (TTL: 10 minutes)
@@ -273,6 +212,7 @@ impl NixServer {
             )),
             flake_tools: Arc::new(crate::nix::FlakeTools::new(audit.clone())),
             quality_tools: Arc::new(crate::nix::QualityTools::new(audit.clone())),
+            machine_tools: Arc::new(crate::clan::MachineTools::new(audit.clone())),
             locate_cache,
             search_cache,
             package_info_cache,
@@ -519,73 +459,9 @@ impl NixServer {
     #[tool(description = "Create a new Clan machine configuration")]
     async fn clan_machine_create(
         &self,
-        Parameters(ClanMachineCreateArgs {
-            name,
-            template,
-            target_host,
-            flake,
-        }): Parameters<ClanMachineCreateArgs>,
+        args: Parameters<ClanMachineCreateArgs>,
     ) -> Result<CallToolResult, McpError> {
-        use crate::common::security::helpers::{audit_tool_execution, with_timeout};
-        use crate::common::security::validate_machine_name;
-
-        // Validate machine name
-        validate_machine_name(&name).map_err(validation_error_to_mcp)?;
-
-        // Validate flake ref if provided
-        let flake_str = flake.unwrap_or_else(|| ".".to_string());
-        validate_flake_ref(&flake_str).map_err(validation_error_to_mcp)?;
-
-        // Execute with security features (audit logging + 60s timeout)
-        audit_tool_execution(
-            &self.audit,
-            "clan_machine_create",
-            Some(serde_json::json!({"name": &name, "flake": &flake_str})),
-            || async {
-                with_timeout(&self.audit, "clan_machine_create", 60, || async {
-                    let mut args = vec!["machines", "create", &name];
-
-                    let template_str = template.unwrap_or_else(|| "new-machine".to_string());
-                    args.push("-t");
-                    args.push(&template_str);
-
-                    args.push("--flake");
-                    args.push(&flake_str);
-
-                    let target_host_str;
-                    if let Some(ref host) = target_host {
-                        target_host_str = host.clone();
-                        args.push("--target-host");
-                        args.push(&target_host_str);
-                    }
-
-                    let output = tokio::process::Command::new("clan")
-                        .args(&args)
-                        .output()
-                        .await
-                        .map_err(|e| {
-                            McpError::internal_error(format!("Failed to execute clan: {}", e), None)
-                        })?;
-
-                    let stdout = String::from_utf8_lossy(&output.stdout);
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-
-                    if !output.status.success() {
-                        return Ok(CallToolResult::success(vec![Content::text(format!(
-                            "Failed to create machine '{}':\n\n{}{}",
-                            name, stdout, stderr
-                        ))]));
-                    }
-
-                    Ok(CallToolResult::success(vec![Content::text(format!(
-                        "Successfully created machine '{}'.\n\n{}{}",
-                        name, stdout, stderr
-                    ))]))
-                })
-                .await
-            },
-        )
-        .await
+        self.machine_tools.clan_machine_create(args).await
     }
 
     #[tool(
@@ -594,51 +470,9 @@ impl NixServer {
     )]
     async fn clan_machine_list(
         &self,
-        Parameters(ClanMachineListArgs { flake }): Parameters<ClanMachineListArgs>,
+        args: Parameters<ClanMachineListArgs>,
     ) -> Result<CallToolResult, McpError> {
-        use crate::common::security::helpers::{audit_tool_execution, with_timeout};
-
-        // Validate flake ref if provided
-        let flake_str = flake.unwrap_or_else(|| ".".to_string());
-        validate_flake_ref(&flake_str).map_err(validation_error_to_mcp)?;
-
-        // Execute with security features (audit logging + 30s timeout)
-        audit_tool_execution(
-            &self.audit,
-            "clan_machine_list",
-            Some(serde_json::json!({"flake": &flake_str})),
-            || async {
-                with_timeout(&self.audit, "clan_machine_list", 30, || async {
-                    let output = tokio::process::Command::new("clan")
-                        .args(["machines", "list", "--flake", &flake_str])
-                        .output()
-                        .await
-                        .map_err(|e| {
-                            McpError::internal_error(format!("Failed to execute clan: {}", e), None)
-                        })?;
-
-                    let stdout = String::from_utf8_lossy(&output.stdout);
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-
-                    if !output.status.success() {
-                        return Ok(CallToolResult::success(vec![Content::text(format!(
-                            "Failed to list machines:\n\n{}{}",
-                            stdout, stderr
-                        ))]));
-                    }
-
-                    let result = if stdout.trim().is_empty() {
-                        "No machines configured in this Clan flake.".to_string()
-                    } else {
-                        format!("Clan Machines:\n\n{}", stdout)
-                    };
-
-                    Ok(CallToolResult::success(vec![Content::text(result)]))
-                })
-                .await
-            },
-        )
-        .await
+        self.machine_tools.clan_machine_list(args).await
     }
 
     #[tool(
@@ -647,80 +481,9 @@ impl NixServer {
     )]
     async fn clan_machine_update(
         &self,
-        Parameters(ClanMachineUpdateArgs { machines, flake }): Parameters<ClanMachineUpdateArgs>,
+        args: Parameters<ClanMachineUpdateArgs>,
     ) -> Result<CallToolResult, McpError> {
-        use crate::common::security::helpers::{audit_tool_execution, with_timeout};
-        use crate::common::security::validate_machine_name;
-
-        // Validate flake ref if provided
-        let flake_str = flake.unwrap_or_else(|| ".".to_string());
-        validate_flake_ref(&flake_str).map_err(validation_error_to_mcp)?;
-
-        // Validate machine names if provided
-        if let Some(ref m) = machines {
-            for machine in m {
-                validate_machine_name(machine).map_err(validation_error_to_mcp)?;
-            }
-        }
-
-        // Log dangerous operation
-        let machines_desc = machines
-            .as_ref()
-            .map(|m| m.join(", "))
-            .unwrap_or_else(|| "all machines".to_string());
-        self.audit.log_dangerous_operation(
-            "clan_machine_update",
-            true,
-            &format!("Updating machines: {}", machines_desc),
-        );
-
-        // Execute with security features (audit logging + 300s timeout)
-        audit_tool_execution(
-            &self.audit,
-            "clan_machine_update",
-            Some(serde_json::json!({"machines": &machines, "flake": &flake_str})),
-            || async {
-                with_timeout(&self.audit, "clan_machine_update", 300, || async {
-                    let mut args = vec!["machines", "update"];
-
-                    args.push("--flake");
-                    args.push(&flake_str);
-
-                    let machine_names: Vec<String>;
-                    if let Some(ref m) = machines {
-                        machine_names = m.clone();
-                        for machine in &machine_names {
-                            args.push(machine);
-                        }
-                    }
-
-                    let output = tokio::process::Command::new("clan")
-                        .args(&args)
-                        .output()
-                        .await
-                        .map_err(|e| {
-                            McpError::internal_error(format!("Failed to execute clan: {}", e), None)
-                        })?;
-
-                    let stdout = String::from_utf8_lossy(&output.stdout);
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-
-                    if !output.status.success() {
-                        return Ok(CallToolResult::success(vec![Content::text(format!(
-                            "Machine update failed:\n\n{}{}",
-                            stdout, stderr
-                        ))]));
-                    }
-
-                    Ok(CallToolResult::success(vec![Content::text(format!(
-                        "Machine update completed.\n\n{}{}",
-                        stdout, stderr
-                    ))]))
-                })
-                .await
-            },
-        )
-        .await
+        self.machine_tools.clan_machine_update(args).await
     }
 
     #[tool(
@@ -729,59 +492,9 @@ impl NixServer {
     )]
     async fn clan_machine_delete(
         &self,
-        Parameters(ClanMachineDeleteArgs { name, flake }): Parameters<ClanMachineDeleteArgs>,
+        args: Parameters<ClanMachineDeleteArgs>,
     ) -> Result<CallToolResult, McpError> {
-        use crate::common::security::helpers::{audit_tool_execution, with_timeout};
-        use crate::common::security::validate_machine_name;
-
-        // Validate machine name
-        validate_machine_name(&name).map_err(validation_error_to_mcp)?;
-
-        // Validate flake ref if provided
-        let flake_str = flake.unwrap_or_else(|| ".".to_string());
-        validate_flake_ref(&flake_str).map_err(validation_error_to_mcp)?;
-
-        // Log dangerous operation
-        self.audit.log_dangerous_operation(
-            "clan_machine_delete",
-            true,
-            &format!("Deleting machine: {}", name),
-        );
-
-        // Execute with security features (audit logging + 60s timeout)
-        audit_tool_execution(
-            &self.audit,
-            "clan_machine_delete",
-            Some(serde_json::json!({"name": &name, "flake": &flake_str})),
-            || async {
-                with_timeout(&self.audit, "clan_machine_delete", 60, || async {
-                    let output = tokio::process::Command::new("clan")
-                        .args(["machines", "delete", &name, "--flake", &flake_str])
-                        .output()
-                        .await
-                        .map_err(|e| {
-                            McpError::internal_error(format!("Failed to execute clan: {}", e), None)
-                        })?;
-
-                    let stdout = String::from_utf8_lossy(&output.stdout);
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-
-                    if !output.status.success() {
-                        return Ok(CallToolResult::success(vec![Content::text(format!(
-                            "Failed to delete machine '{}':\n\n{}{}",
-                            name, stdout, stderr
-                        ))]));
-                    }
-
-                    Ok(CallToolResult::success(vec![Content::text(format!(
-                        "Successfully deleted machine '{}'.\n\n{}{}",
-                        name, stdout, stderr
-                    ))]))
-                })
-                .await
-            },
-        )
-        .await
+        self.machine_tools.clan_machine_delete(args).await
     }
 
     #[tool(
@@ -790,69 +503,9 @@ impl NixServer {
     )]
     async fn clan_machine_install(
         &self,
-        Parameters(ClanMachineInstallArgs {
-            machine,
-            target_host,
-            flake,
-            confirm,
-        }): Parameters<ClanMachineInstallArgs>,
+        args: Parameters<ClanMachineInstallArgs>,
     ) -> Result<CallToolResult, McpError> {
-        use crate::common::security::helpers::{audit_tool_execution, with_timeout};
-        use crate::common::security::validate_machine_name;
-
-        // Validate machine name
-        validate_machine_name(&machine).map_err(validation_error_to_mcp)?;
-
-        // Validate flake ref if provided
-        let flake_str = flake.unwrap_or_else(|| ".".to_string());
-        validate_flake_ref(&flake_str).map_err(validation_error_to_mcp)?;
-
-        // Require user confirmation for this destructive operation
-        if !confirm.unwrap_or(false) {
-            return Ok(CallToolResult::success(vec![Content::text(format!(
-                "WARNING: Installing machine '{}' to '{}' will OVERWRITE THE DISK!\n\n\
-                    This is a destructive operation that will:\n\
-                    - Partition and format the target disk\n\
-                    - Install NixOS\n\
-                    - Deploy the Clan configuration\n\n\
-                    To proceed, call this function again with confirm=true",
-                machine, target_host
-            ))]));
-        }
-
-        // Log dangerous operation approval
-        self.audit.log_dangerous_operation(
-            "clan_machine_install",
-            true,
-            &format!(
-                "Installing machine '{}' to '{}' (user confirmed)",
-                machine, target_host
-            ),
-        );
-
-        // Execute with security features (audit logging + 600s timeout for install)
-        audit_tool_execution(&self.audit, "clan_machine_install", Some(serde_json::json!({"machine": &machine, "target_host": &target_host, "flake": &flake_str})), || async {
-            with_timeout(&self.audit, "clan_machine_install", 600, || async {
-                let output = tokio::process::Command::new("clan")
-                    .args(["machines", "install", &machine, &target_host, "--flake", &flake_str])
-                    .output()
-                    .await
-                    .map_err(|e| McpError::internal_error(format!("Failed to execute clan: {}", e), None))?;
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-
-        if !output.status.success() {
-            return Ok(CallToolResult::success(vec![Content::text(
-                format!("Machine installation failed:\n\n{}{}", stdout, stderr)
-            )]));
-        }
-
-        Ok(CallToolResult::success(vec![Content::text(
-            format!("Machine '{}' successfully installed to '{}'.\n\n{}{}", machine, target_host, stdout, stderr)
-        )]))
-            }).await
-        }).await
+        self.machine_tools.clan_machine_install(args).await
     }
 
     #[tool(description = "Create a backup for a Clan machine")]
@@ -1243,62 +896,9 @@ impl NixServer {
     )]
     async fn clan_machine_build(
         &self,
-        Parameters(ClanMachineBuildArgs {
-            machine,
-            flake,
-            use_nom,
-        }): Parameters<ClanMachineBuildArgs>,
+        args: Parameters<ClanMachineBuildArgs>,
     ) -> Result<CallToolResult, McpError> {
-        use crate::common::security::helpers::{audit_tool_execution, with_timeout};
-        let flake_str = flake.unwrap_or_else(|| ".".to_string());
-
-        audit_tool_execution(&self.audit, "clan_machine_build", Some(serde_json::json!({"machine": &machine, "flake": &flake_str})), || async {
-            with_timeout(&self.audit, "clan_machine_build", 300, || async {
-                let use_nom = use_nom.unwrap_or(false);
-                let build_target = format!(".#nixosConfigurations.{}.config.system.build.toplevel", machine);
-
-                let mut cmd = if use_nom {
-                    // Check if nom is available
-                    let nom_check = tokio::process::Command::new("which")
-                        .arg("nom")
-                        .output()
-                        .await;
-
-                    if nom_check.is_ok() && nom_check.unwrap().status.success() {
-                        let mut c = tokio::process::Command::new("nom");
-                        c.args(["build", &build_target]);
-                        c
-                    } else {
-                        let mut c = tokio::process::Command::new("nix");
-                        c.args(["build", &build_target]);
-                        c
-                    }
-                } else {
-                    let mut c = tokio::process::Command::new("nix");
-                    c.args(["build", &build_target]);
-                    c
-                };
-
-                cmd.current_dir(&flake_str);
-
-                let output = cmd.output()
-                    .await
-                    .map_err(|e| McpError::internal_error(format!("Failed to execute build command: {}", e), None))?;
-
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                let stderr = String::from_utf8_lossy(&output.stderr);
-
-                if !output.status.success() {
-                    return Ok(CallToolResult::success(vec![Content::text(
-                        format!("Build failed for machine '{}':\n\n{}{}", machine, stdout, stderr)
-                    )]));
-                }
-
-                Ok(CallToolResult::success(vec![Content::text(
-                    format!("Successfully built machine '{}' configuration.\n\n{}{}\n\nThe build result is in ./result/", machine, stdout, stderr)
-                )]))
-            }).await
-        }).await
+        self.machine_tools.clan_machine_build(args).await
     }
 
     #[tool(description = "Build a NixOS machine configuration from a flake")]

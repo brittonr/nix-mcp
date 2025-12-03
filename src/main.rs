@@ -3,6 +3,7 @@ use common::nix_server::NixServer;
 use rmcp::transport::stdio;
 use rmcp::ServiceExt;
 use tracing_subscriber::{self, EnvFilter};
+mod clan;
 mod common;
 mod dev;
 mod nix;
