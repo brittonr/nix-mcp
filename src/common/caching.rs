@@ -114,7 +114,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_cache_hit() {
-        let cache = Arc::new(TtlCache::new(Duration::from_secs(60)));
+        let cache = Arc::new(TtlCache::new(Duration::from_secs(60), 100));
         let executor = CachedExecutor::new(cache.clone());
 
         // Pre-populate cache
@@ -135,7 +135,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_cache_miss() {
-        let cache = Arc::new(TtlCache::new(Duration::from_secs(60)));
+        let cache = Arc::new(TtlCache::new(Duration::from_secs(60), 100));
         let executor = CachedExecutor::new(cache.clone());
 
         // Execute - cache miss, should execute and cache
@@ -158,7 +158,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_formatted_cache_key() {
-        let cache = Arc::new(TtlCache::new(Duration::from_secs(60)));
+        let cache = Arc::new(TtlCache::new(Duration::from_secs(60), 100));
         let executor = CachedExecutor::new(cache.clone());
 
         // Execute with formatted key

@@ -55,19 +55,29 @@ pub struct CacheRegistry {
 }
 
 impl CacheRegistry {
-    /// Create a new cache registry with default TTL values.
+    /// Create a new cache registry with default TTL values and capacity limits.
     ///
     /// All caches are created with appropriate TTLs based on the volatility
-    /// of their cached data. More frequently changing data has shorter TTLs.
+    /// of their cached data, and capacity limits to prevent memory leaks.
+    ///
+    /// # Capacity Limits
+    ///
+    /// - `locate`: 200 entries - Expensive file location queries
+    /// - `search`: 1000 entries - Common package searches
+    /// - `package_info`: 500 entries - Relatively stable metadata
+    /// - `eval`: 500 entries - Nix expression evaluations
+    /// - `prefetch`: 1000 entries - URL hashes are immutable
+    /// - `closure_size`: 200 entries - Expensive closure calculations
+    /// - `derivation`: 200 entries - Derivation analysis
     pub fn new() -> Self {
         Self {
-            locate: Arc::new(TtlCache::new(Duration::from_secs(300))), // 5 min
-            search: Arc::new(TtlCache::new(Duration::from_secs(600))), // 10 min
-            package_info: Arc::new(TtlCache::new(Duration::from_secs(1800))), // 30 min
-            eval: Arc::new(TtlCache::new(Duration::from_secs(300))),   // 5 min
-            prefetch: Arc::new(TtlCache::new(Duration::from_secs(86400))), // 24 hours
-            closure_size: Arc::new(TtlCache::new(Duration::from_secs(1800))), // 30 min
-            derivation: Arc::new(TtlCache::new(Duration::from_secs(1800))), // 30 min
+            locate: Arc::new(TtlCache::new(Duration::from_secs(300), 200)), // 5 min, 200 entries
+            search: Arc::new(TtlCache::new(Duration::from_secs(600), 1000)), // 10 min, 1000 entries
+            package_info: Arc::new(TtlCache::new(Duration::from_secs(1800), 500)), // 30 min, 500 entries
+            eval: Arc::new(TtlCache::new(Duration::from_secs(300), 500)), // 5 min, 500 entries
+            prefetch: Arc::new(TtlCache::new(Duration::from_secs(86400), 1000)), // 24 hours, 1000 entries
+            closure_size: Arc::new(TtlCache::new(Duration::from_secs(1800), 200)), // 30 min, 200 entries
+            derivation: Arc::new(TtlCache::new(Duration::from_secs(1800), 200)), // 30 min, 200 entries
         }
     }
 }

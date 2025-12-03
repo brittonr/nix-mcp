@@ -103,37 +103,80 @@ Here are the most useful workflows with onix-mcp:
 
 ### Tool Comparison: When to Use What?
 
-#### Running Packages
+Confused about which tool to use? These comparison matrices help you choose the right tool for your task.
 
-Different tools for different needs:
+#### Running Packages: Which Tool to Use?
 
-| Scenario | Tool | When to Use | Example |
-|----------|------|-------------|---------|
-| Run a package's main binary | `nix_run` | Know exact package name, want to run default binary | "Run hello package" |
-| Run any command | `comma` | Don't know which package provides a command | "Run cowsay with comma" |
-| Run with multiple dependencies | `run_in_shell` | Need custom environment with multiple packages | "Run python script.py with numpy and scipy" |
-| One-off command | `comma` | Fastest for ad-hoc use, auto-discovers package | Interactive testing |
-| Reproducible script | `run_in_shell` | Scripting/automation with explicit dependencies | CI/CD pipelines |
+Different tools for different needs - choose based on what you know and what you need:
 
-#### Building vs Analyzing
+| Scenario | Tool | When to Use | Speed | Example |
+|----------|------|-------------|-------|---------|
+| Run package's main binary | `nix_run` | Know exact package name (e.g., `nixpkgs#hello`) | Fast | `nix_run nixpkgs#cowsay Hello` |
+| Run any command | `comma` | Don't know which package; auto-discovery needed | Medium | `comma cowsay Hello` (finds package automatically) |
+| Command with dependencies | `run_in_shell` | Need multiple packages in environment | Medium | `run_in_shell ["python3", "numpy"] "python script.py"` |
+| Quick one-off test | `comma` | Fastest for ad-hoc exploration | Medium | Try unfamiliar commands instantly |
+| Reproducible automation | `run_in_shell` | CI/CD, scripts - explicit dependencies | Medium | Documented environment requirements |
+| Find command location | `find_command` + `nix_run` | Locate which package, then run it | Slow | Two-step: find then execute |
 
-| Goal | Tool | Output |
-|------|------|--------|
-| See what would be built | `nix_build` (dry_run: true) | Build plan without actually building |
-| Actually build a package | `nix_build` (dry_run: false) | Builds and returns store path |
-| Understand dependencies | `why_depends` | Full dependency chain explanation |
-| Check total size | `get_closure_size` | Size including all dependencies |
-| Compare two packages | `diff_derivations` | Differences between derivations |
-| Debug build failure | `get_build_log` | Full build output for debugging |
+**Decision Flow**: Know exact package? → `nix_run`. Need auto-discovery? → `comma`. Multiple packages? → `run_in_shell`.
 
-#### Code Quality
+#### Building vs Analyzing: Understanding Your Package
 
-| Task | Tool | Use Case |
-|------|------|----------|
-| Format Nix code | `format_nix` or `nix_fmt` | Standardize code formatting |
-| Lint Nix code | `lint_nix` | Find anti-patterns with statix/deadnix |
-| Validate syntax | `validate_nix` | Check for parse errors before building |
-| Full quality check | `pre_commit_run` | Run all quality checks at once |
+Choose based on whether you want to build or just understand:
+
+| Goal | Tool | What It Does | Speed | Best For |
+|------|------|--------------|-------|----------|
+| Preview build plan | `nix_build` (dry_run) | Shows what would be built/downloaded | Fast | Check impact before building |
+| Actually build | `nix_build` | Builds package, returns store path | Slow | Testing builds, getting binaries |
+| Trace dependencies | `why_depends` | Shows full dependency chain A→B→C | Fast | Understanding why package X needs Y |
+| Measure total size | `get_closure_size` | Size with ALL dependencies | Fast | Planning disk space, optimizing images |
+| Compare packages | `diff_derivations` | Differences between two versions | Fast | Understanding version changes |
+| Debug build failure | `get_build_log` | Complete build output & errors | Fast | Troubleshooting compilation issues |
+| Inspect derivation | `show_derivation` | Raw derivation attributes & paths | Fast | Deep debugging, understanding builds |
+
+**Decision Flow**: Build failed? → `get_build_log`. Want size? → `get_closure_size`. Why dependency X? → `why_depends`. Before building → `nix_build --dry-run`.
+
+#### Code Quality: Formatting & Linting
+
+Different tools for different quality checks:
+
+| Task | Tool | What It Checks | Auto-Fix | When to Use |
+|------|------|----------------|----------|-------------|
+| Format Nix code | `format_nix` | Code style consistency | ✅ Yes | Before committing Nix code |
+| Format entire project | `nix_fmt` | All Nix files in project | ✅ Yes | Batch formatting |
+| Lint Nix code | `lint_nix` | Anti-patterns, dead code | ❌ No | Code review, quality checks |
+| Validate syntax | `validate_nix` | Parse errors, basic syntax | ❌ No | Quick syntax verification |
+| Run all checks | `pre_commit_run` | Format + lint + custom hooks | ✅ Partial | Before git commit |
+| Check hooks status | `check_pre_commit_status` | Hook configuration health | N/A | Setup verification |
+
+**Decision Flow**: Quick syntax check? → `validate_nix`. Find issues? → `lint_nix`. Fix formatting? → `format_nix` or `nix_fmt`. All at once? → `pre_commit_run`.
+
+#### Package Discovery: Finding What You Need
+
+Different strategies for finding packages:
+
+| Goal | Tool | How It Works | Best For |
+|------|------|--------------|----------|
+| Search by name/description | `search_packages` | Full-text search in nixpkgs | Know roughly what you want |
+| Find file provider | `nix_locate` | Which package provides `/bin/gcc`? | Have file path, need package |
+| Get package details | `get_package_info` | Version, license, platforms, etc. | Deep dive on specific package |
+| Explain package | `explain_package` | Human-friendly package summary | Quick overview |
+| Find command | `find_command` | Which package has the `gcc` command? | Know command name only |
+
+**Decision Flow**: Know name? → `search_packages`. Have file path? → `nix_locate`. Have command name? → `find_command`. Want details? → `get_package_info`.
+
+#### Flake Operations: Modern Nix Workflows
+
+Choose based on what you're doing with flakes:
+
+| Task | Tool | Purpose | Output |
+|------|------|---------|--------|
+| Inspect flake | `flake_metadata` | Inputs, outputs, description | JSON metadata |
+| Show flake structure | `flake_show` | All outputs (packages, apps, etc.) | Tree structure |
+| Prefetch URL hash | `prefetch_url` | Get hash for fetchurl/fetchgit | SHA256/SRI hash |
+| Evaluate expression | `nix_eval` | Test Nix expressions | Evaluation result |
+
+**Decision Flow**: Understand flake? → `flake_metadata` or `flake_show`. Need URL hash? → `prefetch_url`. Test expression? → `nix_eval`.
 
 ### Quick Tips
 
