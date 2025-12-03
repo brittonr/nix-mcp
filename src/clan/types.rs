@@ -107,3 +107,56 @@ pub struct ClanBackupRestoreArgs {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub flake: Option<String>,
 }
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ClanFlakeCreateArgs {
+    /// Directory to create the Clan flake in
+    pub directory: String,
+    /// Optional template to use
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub template: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ClanSecretsListArgs {
+    /// Optional flake directory path
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub flake: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ClanVmCreateArgs {
+    /// Machine name to create VM for
+    pub machine: String,
+    /// Optional flake directory path
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub flake: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ClanAnalyzeSecretsArgs {
+    /// Optional flake directory path
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub flake: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ClanAnalyzeVarsArgs {
+    /// Optional flake directory path
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub flake: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ClanAnalyzeTagsArgs {
+    /// Optional flake directory path
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub flake: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ClanAnalyzeRosterArgs {
+    /// Optional flake directory path
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub flake: Option<String>,
+}
