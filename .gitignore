@@ -12,3 +12,6 @@ result*
 *.swo
 *~
 .DS_Store
+
+# Planning documents (not for version control)
+plan.md
