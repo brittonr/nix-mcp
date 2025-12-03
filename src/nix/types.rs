@@ -59,3 +59,64 @@ pub struct CommaArgs {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub args: Option<Vec<String>>,
 }
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct NixBuildArgs {
+    /// Package to build (e.g., "nixpkgs#hello", ".#mypackage")
+    pub package: String,
+    /// Perform a dry-run build to show what would be built
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dry_run: Option<bool>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct WhyDependsArgs {
+    /// Package that has the dependency (e.g., "nixpkgs#firefox", ".#result")
+    pub package: String,
+    /// Dependency to explain (e.g., "nixpkgs#libx11")
+    pub dependency: String,
+    /// Show all dependency paths, not just the shortest one
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub show_all: Option<bool>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ShowDerivationArgs {
+    /// Package to inspect (e.g., "nixpkgs#hello")
+    pub package: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct GetClosureSizeArgs {
+    /// Package to analyze (e.g., "nixpkgs#firefox", ".#myapp")
+    pub package: String,
+    /// Show human-readable sizes (e.g., "1.2 GB" instead of bytes)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub human_readable: Option<bool>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct GetBuildLogArgs {
+    /// Package or store path to get build log for (e.g., "nixpkgs#hello", "/nix/store/xxx-hello.drv")
+    pub package: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct DiffDerivationsArgs {
+    /// First package to compare (e.g., "nixpkgs#firefox")
+    pub package_a: String,
+    /// Second package to compare (e.g., "nixpkgs#firefox-esr")
+    pub package_b: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct NixosBuildArgs {
+    /// Machine configuration name to build
+    pub machine: String,
+    /// Optional flake reference (defaults to current directory)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub flake: Option<String>,
+    /// Use nom for better build output (if available)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub use_nom: Option<bool>,
+}
