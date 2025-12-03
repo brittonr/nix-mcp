@@ -5,6 +5,7 @@ use rmcp::ServiceExt;
 use tracing_subscriber::{self, EnvFilter};
 mod common;
 mod dev;
+mod nix;
 mod process;
 mod prompts;
 
