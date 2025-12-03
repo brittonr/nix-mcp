@@ -6,12 +6,81 @@ use rmcp::ErrorData as McpError;
 use rmcp::{tool, tool_router};
 use std::sync::Arc;
 
-/// Pre-commit hooks management tools
+/// Tools for managing pre-commit hooks in git repositories.
+///
+/// This struct provides operations for checking, setting up, and running pre-commit
+/// hooks that enforce code quality standards before commits. Pre-commit hooks can
+/// run formatters, linters, tests, and other checks automatically.
+///
+/// # Available Operations
+///
+/// - **Hook Management**: [`setup_pre_commit`](Self::setup_pre_commit)
+/// - **Status Check**: [`check_pre_commit_status`](Self::check_pre_commit_status)
+/// - **Execution**: [`pre_commit_run`](Self::pre_commit_run)
+///
+/// # Caching Strategy
+///
+/// No caching for pre-commit operations (hook status and results change frequently).
+///
+/// # Timeouts
+///
+/// - `pre_commit_run`: 300 seconds (5 minutes - hooks may be slow)
+/// - `check_pre_commit_status`: No timeout (quick filesystem checks)
+/// - `setup_pre_commit`: No timeout (quick configuration)
+///
+/// # Security
+///
+/// All operations include audit logging:
+/// - Hook IDs are not validated (trusted configuration)
+/// - All operations logged with parameters
+///
+/// # Pre-commit Integration
+///
+/// These tools work with the standard pre-commit framework:
+/// - Expects pre-commit to be available in the environment
+/// - Reads from `.pre-commit-config.yaml`
+/// - Installs hooks to `.git/hooks/pre-commit`
+///
+/// # Common Hooks
+///
+/// Typical pre-commit hooks include:
+/// - **Formatters**: rustfmt, nixpkgs-fmt, black, prettier
+/// - **Linters**: clippy, shellcheck, eslint
+/// - **Security**: cargo-audit, bandit
+/// - **General**: trailing whitespace, merge conflicts, large files
+///
+/// # Examples
+///
+/// ```no_run
+/// use onix_mcp::dev::PreCommitTools;
+/// use onix_mcp::dev::types::PreCommitRunArgs;
+/// use rmcp::handler::server::wrapper::Parameters;
+/// use std::sync::Arc;
+///
+/// # async fn example(tools: PreCommitTools) -> Result<(), Box<dyn std::error::Error>> {
+/// // Run all pre-commit hooks on all files
+/// let result = tools.pre_commit_run(Parameters(PreCommitRunArgs {
+///     all_files: Some(true),
+///     hook_ids: None,
+/// })).await?;
+/// # Ok(())
+/// # }
+/// ```
 pub struct PreCommitTools {
     pub audit: Arc<AuditLogger>,
 }
 
 impl PreCommitTools {
+    /// Creates a new `PreCommitTools` instance with audit logging.
+    ///
+    /// # Arguments
+    ///
+    /// * `audit` - Shared audit logger for security event logging
+    ///
+    /// # Note
+    ///
+    /// PreCommitTools does not use caching as hook status and execution
+    /// results change frequently during development.
     pub fn new(audit: Arc<AuditLogger>) -> Self {
         Self { audit }
     }

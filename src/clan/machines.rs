@@ -13,11 +13,82 @@ use super::types::{
     ClanMachineListArgs, ClanMachineUpdateArgs,
 };
 
+/// Tools for managing Clan machine configurations.
+///
+/// This struct provides operations for the complete lifecycle of Clan machines:
+/// creating, listing, building, deploying, and deleting machine configurations.
+/// Clan machines are NixOS configurations managed through the Clan framework.
+///
+/// # Available Operations
+///
+/// - **Machine Lifecycle**: [`clan_machine_create`](Self::clan_machine_create), [`clan_machine_delete`](Self::clan_machine_delete)
+/// - **Building & Testing**: [`clan_machine_build`](Self::clan_machine_build)
+/// - **Deployment**: [`clan_machine_update`](Self::clan_machine_update), [`clan_machine_install`](Self::clan_machine_install)
+/// - **Discovery**: [`clan_machine_list`](Self::clan_machine_list)
+///
+/// # Caching Strategy
+///
+/// No caching for machine operations (configurations change frequently).
+///
+/// # Timeouts
+///
+/// - `clan_machine_create`: 60 seconds (template instantiation)
+/// - `clan_machine_list`: 30 seconds (quick metadata query)
+/// - `clan_machine_update`: 600 seconds (10 minutes - full rebuild and deploy)
+/// - `clan_machine_delete`: 60 seconds (configuration cleanup)
+/// - `clan_machine_install`: 1200 seconds (20 minutes - full NixOS installation)
+/// - `clan_machine_build`: 600 seconds (10 minutes - full system build)
+///
+/// # Security
+///
+/// All operations include validation and logging:
+/// - Machine names validated for hostname compliance
+/// - Flake references checked for shell metacharacters
+/// - Destructive operations (update, delete, install) are marked and logged
+/// - Install operation requires explicit confirmation
+/// - All operations audited with parameters
+///
+/// # Destructive Operations
+///
+/// **WARNING**: These operations modify or destroy data:
+/// - `clan_machine_install` - Overwrites target disk (requires confirmation)
+/// - `clan_machine_update` - Rebuilds and deploys configuration
+/// - `clan_machine_delete` - Removes machine configuration
+///
+/// # Examples
+///
+/// ```no_run
+/// use onix_mcp::clan::MachineTools;
+/// use onix_mcp::clan::types::ClanMachineCreateArgs;
+/// use rmcp::handler::server::wrapper::Parameters;
+/// use std::sync::Arc;
+///
+/// # async fn example(tools: MachineTools) -> Result<(), Box<dyn std::error::Error>> {
+/// // Create a new machine configuration
+/// let result = tools.clan_machine_create(Parameters(ClanMachineCreateArgs {
+///     name: "webserver".to_string(),
+///     template: Some("new-machine".to_string()),
+///     target_host: Some("192.168.1.10".to_string()),
+///     flake: None,
+/// })).await?;
+/// # Ok(())
+/// # }
+/// ```
 pub struct MachineTools {
     audit: Arc<AuditLogger>,
 }
 
 impl MachineTools {
+    /// Creates a new `MachineTools` instance with audit logging.
+    ///
+    /// # Arguments
+    ///
+    /// * `audit` - Shared audit logger for security event logging
+    ///
+    /// # Note
+    ///
+    /// MachineTools does not use caching as machine configurations
+    /// change frequently and operations must reflect current state.
     pub fn new(audit: Arc<AuditLogger>) -> Self {
         Self { audit }
     }

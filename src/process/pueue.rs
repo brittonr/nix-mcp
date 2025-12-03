@@ -10,12 +10,78 @@ use rmcp::ErrorData as McpError;
 use rmcp::{tool, tool_router};
 use std::sync::Arc;
 
-/// Pueue task queue management tools
+/// Tools for managing background tasks with the Pueue task queue.
+///
+/// This struct provides operations for adding commands to a background task queue,
+/// monitoring their execution, and managing their lifecycle. Pueue enables long-running
+/// commands to execute asynchronously without blocking the MCP server.
+///
+/// # Available Operations
+///
+/// - **Task Management**: [`pueue_add`](Self::pueue_add), [`pueue_remove`](Self::pueue_remove), [`pueue_clean`](Self::pueue_clean)
+/// - **Task Control**: [`pueue_start`](Self::pueue_start), [`pueue_pause`](Self::pueue_pause)
+/// - **Monitoring**: [`pueue_status`](Self::pueue_status), [`pueue_log`](Self::pueue_log), [`pueue_wait`](Self::pueue_wait)
+///
+/// # Caching Strategy
+///
+/// No caching for task queue operations (task state changes in real-time).
+///
+/// # Timeouts
+///
+/// Most operations have 30-second timeouts (quick pueue commands):
+/// - `pueue_add`: 30 seconds
+/// - `pueue_status`: 30 seconds
+/// - `pueue_log`: 30 seconds
+/// - `pueue_wait`: 300 seconds (5 minutes - waits for task completion)
+/// - `pueue_remove`, `pueue_clean`, `pueue_pause`, `pueue_start`: 30 seconds
+///
+/// # Security
+///
+/// All commands are validated before execution:
+/// - Commands checked for null bytes and length limits
+/// - Working directories validated for path traversal
+/// - All operations audited with parameters
+///
+/// # Pueue Integration
+///
+/// This tool uses `nix run nixpkgs#pueue` to ensure pueue is available
+/// without requiring it to be installed globally. The pueue daemon must
+/// be running for these tools to work.
+///
+/// # Examples
+///
+/// ```no_run
+/// use onix_mcp::process::PueueTools;
+/// use onix_mcp::process::types::PueueAddArgs;
+/// use rmcp::handler::server::wrapper::Parameters;
+/// use std::sync::Arc;
+///
+/// # async fn example(tools: PueueTools) -> Result<(), Box<dyn std::error::Error>> {
+/// // Add a long-running build task to the queue
+/// let result = tools.pueue_add(Parameters(PueueAddArgs {
+///     command: "nix build .#mypackage".to_string(),
+///     args: None,
+///     working_directory: Some("/home/user/project".to_string()),
+///     label: Some("build-mypackage".to_string()),
+/// })).await?;
+/// # Ok(())
+/// # }
+/// ```
 pub struct PueueTools {
     pub audit: Arc<AuditLogger>,
 }
 
 impl PueueTools {
+    /// Creates a new `PueueTools` instance with audit logging.
+    ///
+    /// # Arguments
+    ///
+    /// * `audit` - Shared audit logger for security event logging
+    ///
+    /// # Note
+    ///
+    /// PueueTools does not use caching as task queue state changes
+    /// in real-time and must reflect current execution status.
     pub fn new(audit: Arc<AuditLogger>) -> Self {
         Self { audit }
     }

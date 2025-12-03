@@ -1,7 +1,6 @@
-use crate::common::cache::TtlCache;
-use crate::common::security::{
-    audit_logger, validate_flake_ref, validation_error_to_mcp, AuditLogger,
-};
+use crate::common::cache_registry::CacheRegistry;
+use crate::common::security::{audit_logger, AuditLogger};
+use crate::common::tool_registry::ToolRegistry;
 use crate::nix::{
     CommaArgs, DiffDerivationsArgs, EcosystemToolArgs, ExplainPackageArgs, FindCommandArgs,
     FlakeMetadataArgs, FlakeShowArgs, FormatNixArgs, GetBuildLogArgs, GetClosureSizeArgs,
@@ -16,13 +15,12 @@ use rmcp::{
         wrapper::Parameters,
     },
     model::*,
-    prompt, prompt_handler, prompt_router, schemars,
+    prompt, prompt_handler, prompt_router,
     service::RequestContext,
     tool, tool_handler, tool_router, ErrorData as McpError, RoleServer, ServerHandler,
 };
 use serde_json::json;
 use std::sync::Arc;
-use std::time::Duration;
 
 // Import pre-commit types from dev module
 use crate::dev::{CheckPreCommitStatusArgs, PreCommitRunArgs, SetupPreCommitArgs};
@@ -51,88 +49,25 @@ pub struct NixServer {
     tool_router: ToolRouter<NixServer>,
     prompt_router: PromptRouter<NixServer>,
     audit: Arc<AuditLogger>,
-    // Modular tool implementations
-    precommit_tools: Arc<crate::dev::PreCommitTools>,
-    pexpect_tools: Arc<crate::process::PexpectTools>,
-    pueue_tools: Arc<crate::process::PueueTools>,
-    // Modular prompt implementations
-    nix_prompts: Arc<crate::prompts::NixPrompts>,
-    // Modular nix tool implementations
-    info_tools: Arc<crate::nix::InfoTools>,
-    package_tools: Arc<crate::nix::PackageTools>,
-    build_tools: Arc<crate::nix::BuildTools>,
-    develop_tools: Arc<crate::nix::DevelopTools>,
-    flake_tools: Arc<crate::nix::FlakeTools>,
-    quality_tools: Arc<crate::nix::QualityTools>,
-    machine_tools: Arc<crate::clan::MachineTools>,
-    backup_tools: Arc<crate::clan::BackupTools>,
-    analysis_tools: Arc<crate::clan::AnalysisTools>,
-    // Cache for expensive nix-locate queries (TTL: 5 minutes)
-    locate_cache: Arc<TtlCache<String, String>>,
-    // Cache for package search results (TTL: 10 minutes)
-    search_cache: Arc<TtlCache<String, String>>,
-    // Cache for package info (TTL: 30 minutes, packages don't change often)
-    package_info_cache: Arc<TtlCache<String, String>>,
-    // Cache for nix eval results (TTL: 5 minutes)
-    eval_cache: Arc<TtlCache<String, String>>,
-    // Cache for URL prefetch results (TTL: 24 hours, URLs are immutable)
-    prefetch_cache: Arc<TtlCache<String, String>>,
-    // Cache for closure size calculations (TTL: 30 minutes)
-    closure_size_cache: Arc<TtlCache<String, String>>,
-    // Cache for derivation info (TTL: 30 minutes, derivations are immutable)
-    derivation_cache: Arc<TtlCache<String, String>>,
+    // Centralized tool registry for all tool implementations
+    tools: Arc<ToolRegistry>,
+    // Centralized cache registry for all caching needs
+    caches: Arc<CacheRegistry>,
 }
 
 #[tool_router]
 impl NixServer {
     pub fn new() -> Self {
         let audit = audit_logger();
-
-        // Create caches first so they can be shared
-        let locate_cache = Arc::new(TtlCache::new(Duration::from_secs(300))); // 5 min TTL
-        let search_cache = Arc::new(TtlCache::new(Duration::from_secs(600))); // 10 min TTL
-        let package_info_cache = Arc::new(TtlCache::new(Duration::from_secs(1800))); // 30 min TTL
-        let eval_cache = Arc::new(TtlCache::new(Duration::from_secs(300))); // 5 min TTL
-        let closure_size_cache = Arc::new(TtlCache::new(Duration::from_secs(1800))); // 30 min TTL
-        let derivation_cache = Arc::new(TtlCache::new(Duration::from_secs(1800))); // 30 min TTL
-        let prefetch_cache = Arc::new(TtlCache::new(Duration::from_secs(86400))); // 24 hour TTL
+        let caches = Arc::new(CacheRegistry::new());
+        let tools = Arc::new(ToolRegistry::new(audit.clone(), caches.clone()));
 
         Self {
             tool_router: Self::tool_router(),
             prompt_router: Self::prompt_router(),
-            audit: audit.clone(),
-            precommit_tools: Arc::new(crate::dev::PreCommitTools::new(audit.clone())),
-            pexpect_tools: Arc::new(crate::process::PexpectTools::new(audit.clone())),
-            pueue_tools: Arc::new(crate::process::PueueTools::new(audit.clone())),
-            nix_prompts: Arc::new(crate::prompts::NixPrompts::new()),
-            info_tools: Arc::new(crate::nix::InfoTools::new(audit.clone())),
-            package_tools: Arc::new(crate::nix::PackageTools::new(
-                audit.clone(),
-                search_cache.clone(),
-                package_info_cache.clone(),
-                locate_cache.clone(),
-            )),
-            build_tools: Arc::new(crate::nix::BuildTools::new(
-                audit.clone(),
-                closure_size_cache.clone(),
-                derivation_cache.clone(),
-            )),
-            develop_tools: Arc::new(crate::nix::DevelopTools::new(
-                audit.clone(),
-                eval_cache.clone(),
-            )),
-            flake_tools: Arc::new(crate::nix::FlakeTools::new(audit.clone())),
-            quality_tools: Arc::new(crate::nix::QualityTools::new(audit.clone())),
-            machine_tools: Arc::new(crate::clan::MachineTools::new(audit.clone())),
-            backup_tools: Arc::new(crate::clan::BackupTools::new(audit.clone())),
-            analysis_tools: Arc::new(crate::clan::AnalysisTools::new(audit.clone())),
-            locate_cache,
-            search_cache,
-            package_info_cache,
-            eval_cache,
-            prefetch_cache,
-            closure_size_cache,
-            derivation_cache,
+            audit,
+            tools,
+            caches,
         }
     }
 
@@ -148,7 +83,7 @@ impl NixServer {
         &self,
         args: Parameters<SearchPackagesArgs>,
     ) -> Result<CallToolResult, McpError> {
-        self.package_tools.search_packages(args).await
+        self.tools.package.search_packages(args).await
     }
 
     #[tool(
@@ -159,7 +94,7 @@ impl NixServer {
         &self,
         args: Parameters<GetPackageInfoArgs>,
     ) -> Result<CallToolResult, McpError> {
-        self.package_tools.get_package_info(args).await
+        self.tools.package.get_package_info(args).await
     }
 
     #[tool(
@@ -170,12 +105,12 @@ impl NixServer {
         &self,
         args: Parameters<SearchOptionsArgs>,
     ) -> Result<CallToolResult, McpError> {
-        self.develop_tools.search_options(args).await
+        self.tools.develop.search_options(args).await
     }
 
     #[tool(description = "Evaluate a Nix expression")]
     async fn nix_eval(&self, args: Parameters<NixEvalArgs>) -> Result<CallToolResult, McpError> {
-        self.develop_tools.nix_eval(args).await
+        self.tools.develop.nix_eval(args).await
     }
 
     #[tool(
@@ -186,7 +121,7 @@ impl NixServer {
         &self,
         args: Parameters<FormatNixArgs>,
     ) -> Result<CallToolResult, McpError> {
-        self.quality_tools.format_nix(args).await
+        self.tools.quality.format_nix(args).await
     }
 
     #[tool(
@@ -198,7 +133,7 @@ impl NixServer {
         args: Parameters<NixCommandHelpArgs>,
     ) -> Result<CallToolResult, McpError> {
         // Delegate to modular implementation
-        self.info_tools.nix_command_help(args)
+        self.tools.info.nix_command_help(args)
     }
 
     #[tool(
@@ -210,7 +145,7 @@ impl NixServer {
         args: Parameters<EcosystemToolArgs>,
     ) -> Result<CallToolResult, McpError> {
         // Delegate to modular implementation
-        self.info_tools.ecosystem_tools(args)
+        self.tools.info.ecosystem_tools(args)
     }
 
     #[tool(
@@ -221,7 +156,7 @@ impl NixServer {
         &self,
         args: Parameters<ValidateNixArgs>,
     ) -> Result<CallToolResult, McpError> {
-        self.quality_tools.validate_nix(args).await
+        self.tools.quality.validate_nix(args).await
     }
 
     #[tool(
@@ -229,7 +164,7 @@ impl NixServer {
         annotations(idempotent_hint = true)
     )]
     async fn lint_nix(&self, args: Parameters<LintNixArgs>) -> Result<CallToolResult, McpError> {
-        self.quality_tools.lint_nix(args).await
+        self.tools.quality.lint_nix(args).await
     }
 
     #[tool(
@@ -240,7 +175,7 @@ impl NixServer {
         &self,
         args: Parameters<ExplainPackageArgs>,
     ) -> Result<CallToolResult, McpError> {
-        self.package_tools.explain_package(args).await
+        self.tools.package.explain_package(args).await
     }
 
     #[tool(description = "Prefetch a URL and get its hash for use in Nix expressions")]
@@ -248,7 +183,7 @@ impl NixServer {
         &self,
         args: Parameters<PrefetchUrlArgs>,
     ) -> Result<CallToolResult, McpError> {
-        self.flake_tools.prefetch_url(args).await
+        self.tools.flake.prefetch_url(args).await
     }
 
     #[tool(
@@ -259,7 +194,7 @@ impl NixServer {
         &self,
         args: Parameters<FlakeMetadataArgs>,
     ) -> Result<CallToolResult, McpError> {
-        self.flake_tools.flake_metadata(args).await
+        self.tools.flake.flake_metadata(args).await
     }
 
     #[tool(
@@ -270,19 +205,19 @@ impl NixServer {
         &self,
         args: Parameters<FindCommandArgs>,
     ) -> Result<CallToolResult, McpError> {
-        self.package_tools.find_command(args).await
+        self.tools.package.find_command(args).await
     }
 
     #[tool(
         description = "Run a command without installing it using comma (automatically finds and runs commands from nixpkgs)"
     )]
     async fn comma(&self, args: Parameters<CommaArgs>) -> Result<CallToolResult, McpError> {
-        self.package_tools.comma(args).await
+        self.tools.package.comma(args).await
     }
 
     #[tool(description = "Build a Nix package and show what will be built or the build output")]
     async fn nix_build(&self, args: Parameters<NixBuildArgs>) -> Result<CallToolResult, McpError> {
-        self.build_tools.nix_build(args).await
+        self.tools.build.nix_build(args).await
     }
 
     #[tool(
@@ -293,7 +228,7 @@ impl NixServer {
         &self,
         args: Parameters<WhyDependsArgs>,
     ) -> Result<CallToolResult, McpError> {
-        self.build_tools.why_depends(args).await
+        self.tools.build.why_depends(args).await
     }
 
     #[tool(
@@ -304,7 +239,7 @@ impl NixServer {
         &self,
         args: Parameters<ShowDerivationArgs>,
     ) -> Result<CallToolResult, McpError> {
-        self.build_tools.show_derivation(args).await
+        self.tools.build.show_derivation(args).await
     }
 
     #[tool(
@@ -315,7 +250,7 @@ impl NixServer {
         &self,
         args: Parameters<GetClosureSizeArgs>,
     ) -> Result<CallToolResult, McpError> {
-        self.build_tools.get_closure_size(args).await
+        self.tools.build.get_closure_size(args).await
     }
 
     #[tool(description = "Run a command in a Nix shell with specified packages available")]
@@ -323,7 +258,7 @@ impl NixServer {
         &self,
         args: Parameters<RunInShellArgs>,
     ) -> Result<CallToolResult, McpError> {
-        self.develop_tools.run_in_shell(args).await
+        self.tools.develop.run_in_shell(args).await
     }
 
     #[tool(
@@ -334,7 +269,7 @@ impl NixServer {
         &self,
         args: Parameters<FlakeShowArgs>,
     ) -> Result<CallToolResult, McpError> {
-        self.flake_tools.flake_show(args).await
+        self.tools.flake.flake_show(args).await
     }
 
     #[tool(
@@ -345,7 +280,7 @@ impl NixServer {
         &self,
         args: Parameters<GetBuildLogArgs>,
     ) -> Result<CallToolResult, McpError> {
-        self.build_tools.get_build_log(args).await
+        self.tools.build.get_build_log(args).await
     }
 
     #[tool(
@@ -353,7 +288,7 @@ impl NixServer {
         annotations(read_only_hint = true)
     )]
     async fn nix_log(&self, args: Parameters<NixLogArgs>) -> Result<CallToolResult, McpError> {
-        self.develop_tools.nix_log(args).await
+        self.tools.develop.nix_log(args).await
     }
 
     #[tool(
@@ -364,7 +299,7 @@ impl NixServer {
         &self,
         args: Parameters<DiffDerivationsArgs>,
     ) -> Result<CallToolResult, McpError> {
-        self.build_tools.diff_derivations(args).await
+        self.tools.build.diff_derivations(args).await
     }
 
     // Clan integration tools
@@ -374,7 +309,7 @@ impl NixServer {
         &self,
         args: Parameters<ClanMachineCreateArgs>,
     ) -> Result<CallToolResult, McpError> {
-        self.machine_tools.clan_machine_create(args).await
+        self.tools.machine.clan_machine_create(args).await
     }
 
     #[tool(
@@ -385,7 +320,7 @@ impl NixServer {
         &self,
         args: Parameters<ClanMachineListArgs>,
     ) -> Result<CallToolResult, McpError> {
-        self.machine_tools.clan_machine_list(args).await
+        self.tools.machine.clan_machine_list(args).await
     }
 
     #[tool(
@@ -396,7 +331,7 @@ impl NixServer {
         &self,
         args: Parameters<ClanMachineUpdateArgs>,
     ) -> Result<CallToolResult, McpError> {
-        self.machine_tools.clan_machine_update(args).await
+        self.tools.machine.clan_machine_update(args).await
     }
 
     #[tool(
@@ -407,7 +342,7 @@ impl NixServer {
         &self,
         args: Parameters<ClanMachineDeleteArgs>,
     ) -> Result<CallToolResult, McpError> {
-        self.machine_tools.clan_machine_delete(args).await
+        self.tools.machine.clan_machine_delete(args).await
     }
 
     #[tool(
@@ -418,7 +353,7 @@ impl NixServer {
         &self,
         args: Parameters<ClanMachineInstallArgs>,
     ) -> Result<CallToolResult, McpError> {
-        self.machine_tools.clan_machine_install(args).await
+        self.tools.machine.clan_machine_install(args).await
     }
 
     #[tool(description = "Create a backup for a Clan machine")]
@@ -426,7 +361,7 @@ impl NixServer {
         &self,
         args: Parameters<ClanBackupCreateArgs>,
     ) -> Result<CallToolResult, McpError> {
-        self.backup_tools.clan_backup_create(args).await
+        self.tools.backup.clan_backup_create(args).await
     }
 
     #[tool(
@@ -437,7 +372,7 @@ impl NixServer {
         &self,
         args: Parameters<ClanBackupListArgs>,
     ) -> Result<CallToolResult, McpError> {
-        self.backup_tools.clan_backup_list(args).await
+        self.tools.backup.clan_backup_list(args).await
     }
 
     #[tool(
@@ -448,7 +383,7 @@ impl NixServer {
         &self,
         args: Parameters<ClanBackupRestoreArgs>,
     ) -> Result<CallToolResult, McpError> {
-        self.backup_tools.clan_backup_restore(args).await
+        self.tools.backup.clan_backup_restore(args).await
     }
 
     #[tool(description = "Create a new Clan flake from a template")]
@@ -456,7 +391,7 @@ impl NixServer {
         &self,
         args: Parameters<ClanFlakeCreateArgs>,
     ) -> Result<CallToolResult, McpError> {
-        self.analysis_tools.clan_flake_create(args).await
+        self.tools.analysis.clan_flake_create(args).await
     }
 
     #[tool(
@@ -467,7 +402,7 @@ impl NixServer {
         &self,
         args: Parameters<ClanSecretsListArgs>,
     ) -> Result<CallToolResult, McpError> {
-        self.analysis_tools.clan_secrets_list(args).await
+        self.tools.analysis.clan_secrets_list(args).await
     }
 
     #[tool(description = "Create and run a VM for a Clan machine (useful for testing)")]
@@ -475,7 +410,7 @@ impl NixServer {
         &self,
         args: Parameters<ClanVmCreateArgs>,
     ) -> Result<CallToolResult, McpError> {
-        self.analysis_tools.clan_vm_create(args).await
+        self.tools.analysis.clan_vm_create(args).await
     }
 
     #[tool(
@@ -485,7 +420,7 @@ impl NixServer {
         &self,
         args: Parameters<ClanMachineBuildArgs>,
     ) -> Result<CallToolResult, McpError> {
-        self.machine_tools.clan_machine_build(args).await
+        self.tools.machine.clan_machine_build(args).await
     }
 
     #[tool(description = "Build a NixOS machine configuration from a flake")]
@@ -493,7 +428,7 @@ impl NixServer {
         &self,
         args: Parameters<NixosBuildArgs>,
     ) -> Result<CallToolResult, McpError> {
-        self.build_tools.nixos_build(args).await
+        self.tools.build.nixos_build(args).await
     }
 
     #[tool(description = "Analyze Clan secret (ACL) ownership across machines")]
@@ -501,7 +436,7 @@ impl NixServer {
         &self,
         args: Parameters<ClanAnalyzeSecretsArgs>,
     ) -> Result<CallToolResult, McpError> {
-        self.analysis_tools.clan_analyze_secrets(args).await
+        self.tools.analysis.clan_analyze_secrets(args).await
     }
 
     #[tool(description = "Analyze Clan vars ownership across machines")]
@@ -509,7 +444,7 @@ impl NixServer {
         &self,
         args: Parameters<ClanAnalyzeVarsArgs>,
     ) -> Result<CallToolResult, McpError> {
-        self.analysis_tools.clan_analyze_vars(args).await
+        self.tools.analysis.clan_analyze_vars(args).await
     }
 
     #[tool(description = "Analyze Clan machine tags across the infrastructure")]
@@ -517,7 +452,7 @@ impl NixServer {
         &self,
         args: Parameters<ClanAnalyzeTagsArgs>,
     ) -> Result<CallToolResult, McpError> {
-        self.analysis_tools.clan_analyze_tags(args).await
+        self.tools.analysis.clan_analyze_tags(args).await
     }
 
     #[tool(description = "Analyze Clan user roster configurations")]
@@ -525,7 +460,7 @@ impl NixServer {
         &self,
         args: Parameters<ClanAnalyzeRosterArgs>,
     ) -> Result<CallToolResult, McpError> {
-        self.analysis_tools.clan_analyze_roster(args).await
+        self.tools.analysis.clan_analyze_roster(args).await
     }
 
     #[tool(
@@ -535,7 +470,7 @@ impl NixServer {
         &self,
         args: Parameters<serde_json::Map<String, serde_json::Value>>,
     ) -> Result<CallToolResult, McpError> {
-        self.analysis_tools.clan_help(args)
+        self.tools.analysis.clan_help(args)
     }
 
     #[tool(
@@ -546,7 +481,7 @@ impl NixServer {
         &self,
         args: Parameters<NixLocateArgs>,
     ) -> Result<CallToolResult, McpError> {
-        self.package_tools.nix_locate(args).await
+        self.tools.package.nix_locate(args).await
     }
 
     #[tool(
@@ -554,7 +489,7 @@ impl NixServer {
         annotations(read_only_hint = false)
     )]
     async fn nix_run(&self, args: Parameters<NixRunArgs>) -> Result<CallToolResult, McpError> {
-        self.develop_tools.nix_run(args).await
+        self.tools.develop.nix_run(args).await
     }
 
     #[tool(
@@ -565,7 +500,7 @@ impl NixServer {
         &self,
         args: Parameters<NixDevelopArgs>,
     ) -> Result<CallToolResult, McpError> {
-        self.develop_tools.nix_develop(args).await
+        self.tools.develop.nix_develop(args).await
     }
 
     #[tool(
@@ -573,7 +508,7 @@ impl NixServer {
         annotations(read_only_hint = false)
     )]
     async fn nix_fmt(&self, args: Parameters<NixFmtArgs>) -> Result<CallToolResult, McpError> {
-        self.quality_tools.nix_fmt(args).await
+        self.tools.quality.nix_fmt(args).await
     }
 
     #[tool(
@@ -582,7 +517,7 @@ impl NixServer {
     )]
     async fn pueue_add(&self, args: Parameters<PueueAddArgs>) -> Result<CallToolResult, McpError> {
         // Delegate to modular implementation
-        self.pueue_tools.pueue_add(args).await
+        self.tools.pueue.pueue_add(args).await
     }
 
     #[tool(
@@ -594,7 +529,7 @@ impl NixServer {
         args: Parameters<PueueStatusArgs>,
     ) -> Result<CallToolResult, McpError> {
         // Delegate to modular implementation
-        self.pueue_tools.pueue_status(args).await
+        self.tools.pueue.pueue_status(args).await
     }
 
     #[tool(
@@ -603,7 +538,7 @@ impl NixServer {
     )]
     async fn pueue_log(&self, args: Parameters<PueueLogArgs>) -> Result<CallToolResult, McpError> {
         // Delegate to modular implementation
-        self.pueue_tools.pueue_log(args).await
+        self.tools.pueue.pueue_log(args).await
     }
 
     #[tool(
@@ -615,7 +550,7 @@ impl NixServer {
         args: Parameters<PueueWaitArgs>,
     ) -> Result<CallToolResult, McpError> {
         // Delegate to modular implementation
-        self.pueue_tools.pueue_wait(args).await
+        self.tools.pueue.pueue_wait(args).await
     }
 
     #[tool(
@@ -627,7 +562,7 @@ impl NixServer {
         args: Parameters<PueueRemoveArgs>,
     ) -> Result<CallToolResult, McpError> {
         // Delegate to modular implementation
-        self.pueue_tools.pueue_remove(args).await
+        self.tools.pueue.pueue_remove(args).await
     }
 
     #[tool(
@@ -639,7 +574,7 @@ impl NixServer {
         args: Parameters<PueueCleanArgs>,
     ) -> Result<CallToolResult, McpError> {
         // Delegate to modular implementation
-        self.pueue_tools.pueue_clean(args).await
+        self.tools.pueue.pueue_clean(args).await
     }
 
     #[tool(
@@ -651,7 +586,7 @@ impl NixServer {
         args: Parameters<PueuePauseArgs>,
     ) -> Result<CallToolResult, McpError> {
         // Delegate to modular implementation
-        self.pueue_tools.pueue_pause(args).await
+        self.tools.pueue.pueue_pause(args).await
     }
 
     #[tool(
@@ -663,7 +598,7 @@ impl NixServer {
         args: Parameters<PueueStartArgs>,
     ) -> Result<CallToolResult, McpError> {
         // Delegate to modular implementation
-        self.pueue_tools.pueue_start(args).await
+        self.tools.pueue.pueue_start(args).await
     }
 
     #[tool(
@@ -675,7 +610,7 @@ impl NixServer {
         args: Parameters<PexpectStartArgs>,
     ) -> Result<CallToolResult, McpError> {
         // Delegate to modular implementation
-        self.pexpect_tools.pexpect_start(args).await
+        self.tools.pexpect.pexpect_start(args).await
     }
 
     #[tool(
@@ -687,7 +622,7 @@ impl NixServer {
         args: Parameters<PexpectSendArgs>,
     ) -> Result<CallToolResult, McpError> {
         // Delegate to modular implementation
-        self.pexpect_tools.pexpect_send(args).await
+        self.tools.pexpect.pexpect_send(args).await
     }
 
     #[tool(
@@ -699,7 +634,7 @@ impl NixServer {
         args: Parameters<PexpectCloseArgs>,
     ) -> Result<CallToolResult, McpError> {
         // Delegate to modular implementation
-        self.pexpect_tools.pexpect_close(args).await
+        self.tools.pexpect.pexpect_close(args).await
     }
 
     #[tool(
@@ -711,7 +646,7 @@ impl NixServer {
         args: Parameters<PreCommitRunArgs>,
     ) -> Result<CallToolResult, McpError> {
         // Delegate to modular implementation
-        self.precommit_tools.pre_commit_run(args).await
+        self.tools.precommit.pre_commit_run(args).await
     }
 
     #[tool(
@@ -723,7 +658,7 @@ impl NixServer {
         args: Parameters<CheckPreCommitStatusArgs>,
     ) -> Result<CallToolResult, McpError> {
         // Delegate to modular implementation
-        self.precommit_tools.check_pre_commit_status(args).await
+        self.tools.precommit.check_pre_commit_status(args).await
     }
 
     #[tool(
@@ -735,7 +670,7 @@ impl NixServer {
         args: Parameters<SetupPreCommitArgs>,
     ) -> Result<CallToolResult, McpError> {
         // Delegate to modular implementation
-        self.precommit_tools.setup_pre_commit(args).await
+        self.tools.precommit.setup_pre_commit(args).await
     }
 }
 
@@ -748,7 +683,7 @@ impl NixServer {
         args: Parameters<serde_json::Map<String, serde_json::Value>>,
         ctx: RequestContext<RoleServer>,
     ) -> Result<Vec<PromptMessage>, McpError> {
-        self.nix_prompts.generate_flake(args, ctx).await
+        self.tools.prompts.generate_flake(args, ctx).await
     }
 
     /// Guide for setting up a Nix development environment for a specific project type
@@ -758,7 +693,7 @@ impl NixServer {
         args: Parameters<SetupDevEnvironmentArgs>,
         ctx: RequestContext<RoleServer>,
     ) -> Result<GetPromptResult, McpError> {
-        self.nix_prompts.setup_dev_environment(args, ctx).await
+        self.tools.prompts.setup_dev_environment(args, ctx).await
     }
 
     /// Help troubleshoot Nix build failures with diagnostic guidance
@@ -768,7 +703,7 @@ impl NixServer {
         args: Parameters<TroubleshootBuildArgs>,
         ctx: RequestContext<RoleServer>,
     ) -> Result<GetPromptResult, McpError> {
-        self.nix_prompts.troubleshoot_build(args, ctx).await
+        self.tools.prompts.troubleshoot_build(args, ctx).await
     }
 
     /// Guide for migrating existing projects to Nix flakes
@@ -778,7 +713,7 @@ impl NixServer {
         args: Parameters<MigrateToFlakesArgs>,
         ctx: RequestContext<RoleServer>,
     ) -> Result<GetPromptResult, McpError> {
-        self.nix_prompts.migrate_to_flakes(args, ctx).await
+        self.tools.prompts.migrate_to_flakes(args, ctx).await
     }
 
     /// Help optimize package closure size with actionable recommendations
@@ -788,7 +723,7 @@ impl NixServer {
         args: Parameters<OptimizeClosureArgs>,
         ctx: RequestContext<RoleServer>,
     ) -> Result<GetPromptResult, McpError> {
-        self.nix_prompts.optimize_closure(args, ctx).await
+        self.tools.prompts.optimize_closure(args, ctx).await
     }
 }
 

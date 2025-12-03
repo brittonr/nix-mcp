@@ -1,3 +1,4 @@
+use crate::common::cache_registry::CacheRegistry;
 use crate::common::caching::CachedExecutor;
 use crate::common::security::audit::AuditLogger;
 use crate::common::security::helpers::{
@@ -15,26 +16,58 @@ use super::types::{
     SearchPackagesArgs,
 };
 
+/// Tools for searching, locating, and querying Nix packages.
+///
+/// This struct provides cached access to expensive Nix operations like package searches
+/// and file location lookups. All operations are thread-safe and use TTL-based caching
+/// to balance freshness with performance.
+///
+/// # Caching Strategy
+///
+/// - `search_cache`: 10-minute TTL for package search results
+/// - `package_info_cache`: 30-minute TTL for package metadata
+/// - `locate_cache`: 5-minute TTL for file location queries
+///
+/// # Security
+///
+/// All inputs are validated before execution:
+/// - Package names checked for injection attacks and path traversal
+/// - Commands validated to prevent shell injection
+/// - All operations logged via audit logger
+///
+/// # Examples
+///
+/// ```no_run
+/// use onix_mcp::nix::PackageTools;
+/// use std::sync::Arc;
+///
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// let audit = Arc::new(/* audit logger */);
+/// let caches = Arc::new(/* cache registry */);
+/// let tools = PackageTools::new(audit, caches);
+///
+/// // Search for packages
+/// // let result = tools.search_packages(Parameters(SearchPackagesArgs {
+/// //     query: "ripgrep".to_string(),
+/// //     limit: Some(10),
+/// // })).await?;
+/// # Ok(())
+/// # }
+/// ```
 pub struct PackageTools {
     audit: Arc<AuditLogger>,
-    search_cache: Arc<crate::common::cache::TtlCache<String, String>>,
-    package_info_cache: Arc<crate::common::cache::TtlCache<String, String>>,
-    locate_cache: Arc<crate::common::cache::TtlCache<String, String>>,
+    caches: Arc<CacheRegistry>,
 }
 
 impl PackageTools {
-    pub fn new(
-        audit: Arc<AuditLogger>,
-        search_cache: Arc<crate::common::cache::TtlCache<String, String>>,
-        package_info_cache: Arc<crate::common::cache::TtlCache<String, String>>,
-        locate_cache: Arc<crate::common::cache::TtlCache<String, String>>,
-    ) -> Self {
-        Self {
-            audit,
-            search_cache,
-            package_info_cache,
-            locate_cache,
-        }
+    /// Creates a new `PackageTools` instance with audit logging and caching.
+    ///
+    /// # Arguments
+    ///
+    /// * `audit` - Shared audit logger for security event logging
+    /// * `caches` - Shared cache registry containing search, package_info, and locate caches
+    pub fn new(audit: Arc<AuditLogger>, caches: Arc<CacheRegistry>) -> Self {
+        Self { audit, caches }
     }
 }
 
@@ -52,7 +85,7 @@ impl PackageTools {
         validate_package_name(&query).map_err(validation_error_to_mcp)?;
 
         // Use cached executor with formatted cache key
-        let cached_executor = CachedExecutor::new(self.search_cache.clone());
+        let cached_executor = CachedExecutor::new(self.caches.search.clone());
         let audit = self.audit.clone();
         let query_clone = query.clone();
         let limit_value = limit.unwrap_or(10);
@@ -152,12 +185,12 @@ impl PackageTools {
         validate_flake_ref(&package).map_err(validation_error_to_mcp)?;
 
         // Check cache first
-        if let Some(cached_result) = self.package_info_cache.get(&package) {
+        if let Some(cached_result) = self.caches.package_info.get(&package) {
             return Ok(CallToolResult::success(vec![Content::text(cached_result)]));
         }
 
         // Execute with security features (audit logging + timeout)
-        let package_info_cache = self.package_info_cache.clone();
+        let package_info_cache = self.caches.package_info.clone();
         let package_clone = package.clone();
 
         audit_tool_execution(
@@ -395,12 +428,12 @@ impl PackageTools {
         let cache_key = format!("{}:{}", path, limit.unwrap_or(20));
 
         // Check cache first
-        if let Some(cached_result) = self.locate_cache.get(&cache_key) {
+        if let Some(cached_result) = self.caches.locate.get(&cache_key) {
             return Ok(CallToolResult::success(vec![Content::text(cached_result)]));
         }
 
         // Wrap tool logic with security
-        let locate_cache = self.locate_cache.clone();
+        let locate_cache = self.caches.locate.clone();
         let cache_key_clone = cache_key.clone();
 
         audit_tool_execution(

@@ -10,11 +10,73 @@ use std::sync::Arc;
 
 use super::types::{ClanBackupCreateArgs, ClanBackupListArgs, ClanBackupRestoreArgs};
 
+/// Tools for managing Clan machine backups.
+///
+/// This struct provides operations for creating, listing, and restoring backups
+/// of Clan machines. Backups can be created and restored using different providers
+/// (local, remote, etc.) and can target specific services or entire machines.
+///
+/// # Available Operations
+///
+/// - **Backup Management**: [`clan_backup_create`](Self::clan_backup_create), [`clan_backup_restore`](Self::clan_backup_restore)
+/// - **Discovery**: [`clan_backup_list`](Self::clan_backup_list)
+///
+/// # Caching Strategy
+///
+/// No caching for backup operations (backups change frequently).
+///
+/// # Timeouts
+///
+/// - `clan_backup_create`: 120 seconds (2 minutes - backup creation)
+/// - `clan_backup_list`: 60 seconds (1 minute - listing backups)
+/// - `clan_backup_restore`: 300 seconds (5 minutes - restore operation)
+///
+/// # Security
+///
+/// All operations include validation and logging:
+/// - Machine names validated for hostname compliance
+/// - Flake references checked for shell metacharacters
+/// - Restore operation is marked as destructive
+/// - All operations audited with parameters
+///
+/// # Destructive Operations
+///
+/// **WARNING**: Restore operation modifies data:
+/// - `clan_backup_restore` - Overwrites service or machine data
+///
+/// # Examples
+///
+/// ```no_run
+/// use onix_mcp::clan::BackupTools;
+/// use onix_mcp::clan::types::ClanBackupCreateArgs;
+/// use rmcp::handler::server::wrapper::Parameters;
+/// use std::sync::Arc;
+///
+/// # async fn example(tools: BackupTools) -> Result<(), Box<dyn std::error::Error>> {
+/// // Create a backup for a machine
+/// let result = tools.clan_backup_create(Parameters(ClanBackupCreateArgs {
+///     machine: "webserver".to_string(),
+///     provider: Some("local".to_string()),
+///     flake: None,
+/// })).await?;
+/// # Ok(())
+/// # }
+/// ```
 pub struct BackupTools {
     audit: Arc<AuditLogger>,
 }
 
 impl BackupTools {
+    /// Creates a new `BackupTools` instance with audit logging.
+    ///
+    /// # Arguments
+    ///
+    /// * `audit` - Shared audit logger for security event logging
+    ///
+    /// # Note
+    ///
+    /// BackupTools does not use caching as backup state changes
+    /// frequently and operations must reflect current state.
     pub fn new(audit: Arc<AuditLogger>) -> Self {
         Self { audit }
     }

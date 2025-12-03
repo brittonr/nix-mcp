@@ -1,4 +1,4 @@
-use crate::common::cache::TtlCache;
+use crate::common::cache_registry::CacheRegistry;
 use crate::common::security::helpers::validation_error_to_mcp;
 use crate::common::security::{validate_flake_ref, AuditLogger};
 use rmcp::handler::server::wrapper::Parameters;
@@ -10,17 +10,66 @@ use std::time::Duration;
 
 use super::types::{FlakeMetadataArgs, FlakeShowArgs, PrefetchUrlArgs};
 
+/// Tools for working with Nix flakes.
+///
+/// This struct provides operations for inspecting flake metadata, viewing flake
+/// outputs, and prefetching remote content with integrity hashes. These tools
+/// are essential for flake-based Nix workflows and reproducible builds.
+///
+/// # Available Operations
+///
+/// - **Flake Inspection**: [`flake_metadata`](Self::flake_metadata), [`flake_show`](Self::flake_show)
+/// - **Content Fetching**: [`prefetch_url`](Self::prefetch_url)
+///
+/// # Caching Strategy
+///
+/// - URL prefetches: 24-hour TTL (hashes are content-addressed and stable)
+/// - Flake metadata: No caching (metadata changes with updates)
+/// - Flake outputs: No caching (outputs change with flake updates)
+///
+/// # Timeouts
+///
+/// - `flake_metadata`: 30 seconds (metadata fetch and parsing)
+/// - `flake_show`: 30 seconds (output evaluation is fast)
+/// - `prefetch_url`: 60 seconds (downloads may take time)
+///
+/// # Security
+///
+/// All inputs are validated:
+/// - Flake references checked for shell metacharacters
+/// - URLs validated for protocol, encoding, and length
+/// - All operations include audit logging
+///
+/// # Examples
+///
+/// ```no_run
+/// use onix_mcp::nix::FlakeTools;
+/// use onix_mcp::nix::types::FlakeMetadataArgs;
+/// use rmcp::handler::server::wrapper::Parameters;
+/// use std::sync::Arc;
+///
+/// # async fn example(tools: FlakeTools) -> Result<(), Box<dyn std::error::Error>> {
+/// // Get metadata for a flake
+/// let result = tools.flake_metadata(Parameters(FlakeMetadataArgs {
+///     flake_ref: "github:nixos/nixpkgs".to_string(),
+/// })).await?;
+/// # Ok(())
+/// # }
+/// ```
 pub struct FlakeTools {
     audit: Arc<AuditLogger>,
-    prefetch_cache: Arc<TtlCache<String, String>>,
+    caches: Arc<CacheRegistry>,
 }
 
 impl FlakeTools {
-    pub fn new(audit: Arc<AuditLogger>) -> Self {
-        Self {
-            audit,
-            prefetch_cache: Arc::new(TtlCache::new(Duration::from_secs(86400))), // 24 hour TTL
-        }
+    /// Creates a new `FlakeTools` instance with audit logging and caching.
+    ///
+    /// # Arguments
+    ///
+    /// * `audit` - Shared audit logger for security event logging
+    /// * `caches` - Shared cache registry containing prefetch cache
+    pub fn new(audit: Arc<AuditLogger>, caches: Arc<CacheRegistry>) -> Self {
+        Self { audit, caches }
     }
 }
 
@@ -217,12 +266,12 @@ impl FlakeTools {
         let cache_key = format!("{}:{}", url, hash_format.as_deref().unwrap_or("sri"));
 
         // Check cache first
-        if let Some(cached_result) = self.prefetch_cache.get(&cache_key) {
+        if let Some(cached_result) = self.caches.prefetch.get(&cache_key) {
             return Ok(CallToolResult::success(vec![Content::text(cached_result)]));
         }
 
         // Execute with security features (audit logging + 60s timeout)
-        let prefetch_cache = self.prefetch_cache.clone();
+        let prefetch_cache = self.caches.prefetch.clone();
         let cache_key_clone = cache_key.clone();
 
         audit_tool_execution(&self.audit, "prefetch_url", Some(serde_json::json!({"url": &url})), || async move {

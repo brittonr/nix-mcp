@@ -1,3 +1,4 @@
+use crate::common::cache_registry::CacheRegistry;
 use crate::common::caching::CachedExecutor;
 use crate::common::security::audit::AuditLogger;
 use crate::common::security::helpers::{
@@ -17,17 +18,75 @@ use super::types::{
     NixDevelopArgs, NixEvalArgs, NixLogArgs, NixRunArgs, RunInShellArgs, SearchOptionsArgs,
 };
 
+/// Tools for Nix development environments and expression evaluation.
+///
+/// This struct provides operations for working with Nix development shells,
+/// evaluating expressions, running packages, and debugging builds. These tools
+/// support rapid development workflows and exploratory Nix operations.
+///
+/// # Available Operations
+///
+/// - **Shell Environments**: [`run_in_shell`](Self::run_in_shell), [`nix_develop`](Self::nix_develop)
+/// - **Package Execution**: [`nix_run`](Self::nix_run)
+/// - **Expression Evaluation**: [`nix_eval`](Self::nix_eval)
+/// - **Debugging**: [`nix_log`](Self::nix_log)
+/// - **Configuration**: [`search_options`](Self::search_options)
+///
+/// # Caching Strategy
+///
+/// - Nix evaluations: 5-minute TTL (expressions may change frequently)
+/// - No caching for shell/run operations (execution must be fresh)
+/// - Option searches: 10-minute TTL (options are relatively stable)
+///
+/// # Timeouts
+///
+/// - `nix_eval`: 30 seconds (expression evaluation should be quick)
+/// - `run_in_shell`: 120 seconds (2 minutes for shell commands)
+/// - `nix_run`: 300 seconds (5 minutes for package execution)
+/// - `nix_develop`: 300 seconds (5 minutes for dev shell commands)
+/// - `nix_log`: 30 seconds (log retrieval is I/O bound)
+///
+/// # Security
+///
+/// All commands are validated before execution:
+/// - Nix expressions scanned for dangerous patterns (shell substitution, etc.)
+/// - Commands checked for null bytes and length limits
+/// - Package names validated for injection attacks
+/// - Shell operations marked as dangerous and logged
+/// - All operations include audit logging with parameters
+///
+/// # Examples
+///
+/// ```no_run
+/// use onix_mcp::nix::DevelopTools;
+/// use onix_mcp::nix::types::RunInShellArgs;
+/// use rmcp::handler::server::wrapper::Parameters;
+/// use std::sync::Arc;
+///
+/// # async fn example(tools: DevelopTools) -> Result<(), Box<dyn std::error::Error>> {
+/// // Run a command with temporary packages
+/// let result = tools.run_in_shell(Parameters(RunInShellArgs {
+///     packages: vec!["python3".to_string(), "numpy".to_string()],
+///     command: "python -c 'import numpy; print(numpy.__version__)'".to_string(),
+///     use_flake: Some(false),
+/// })).await?;
+/// # Ok(())
+/// # }
+/// ```
 pub struct DevelopTools {
     audit: Arc<AuditLogger>,
-    eval_cache: Arc<crate::common::cache::TtlCache<String, String>>,
+    caches: Arc<CacheRegistry>,
 }
 
 impl DevelopTools {
-    pub fn new(
-        audit: Arc<AuditLogger>,
-        eval_cache: Arc<crate::common::cache::TtlCache<String, String>>,
-    ) -> Self {
-        Self { audit, eval_cache }
+    /// Creates a new `DevelopTools` instance with audit logging and caching.
+    ///
+    /// # Arguments
+    ///
+    /// * `audit` - Shared audit logger for security event logging
+    /// * `caches` - Shared cache registry containing eval cache
+    pub fn new(audit: Arc<AuditLogger>, caches: Arc<CacheRegistry>) -> Self {
+        Self { audit, caches }
     }
 }
 
@@ -98,7 +157,7 @@ impl DevelopTools {
         validate_nix_expression(&expression).map_err(validation_error_to_mcp)?;
 
         // Use cached executor for cache-check-execute-cache pattern
-        let cached_executor = CachedExecutor::new(self.eval_cache.clone());
+        let cached_executor = CachedExecutor::new(self.caches.eval.clone());
         let audit = self.audit.clone();
         let expression_clone = expression.clone();
 

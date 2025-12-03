@@ -1,4 +1,5 @@
 use crate::common::cache::TtlCache;
+use crate::common::cache_registry::CacheRegistry;
 use crate::common::security::audit::AuditLogger;
 use crate::common::security::helpers::{
     audit_tool_execution, validation_error_to_mcp, with_timeout,
@@ -15,23 +16,63 @@ use super::types::{
     ShowDerivationArgs, WhyDependsArgs,
 };
 
+/// Tools for building packages and analyzing dependencies.
+///
+/// This struct provides operations for building Nix packages, analyzing derivations,
+/// understanding dependency relationships, and debugging build failures. All operations
+/// include caching for expensive queries and comprehensive security validation.
+///
+/// # Available Operations
+///
+/// - **Building**: [`nix_build`](Self::nix_build), [`nixos_build`](Self::nixos_build)
+/// - **Dependency Analysis**: [`why_depends`](Self::why_depends), [`get_closure_size`](Self::get_closure_size)
+/// - **Derivation Inspection**: [`show_derivation`](Self::show_derivation), [`diff_derivations`](Self::diff_derivations)
+/// - **Debugging**: [`get_build_log`](Self::get_build_log)
+///
+/// # Caching Strategy
+///
+/// - Closure sizes: 30-minute TTL (expensive computation)
+/// - Derivations: 30-minute TTL (stable unless package changes)
+///
+/// # Timeouts
+///
+/// Build operations have extended timeouts:
+/// - Regular builds: 300 seconds (5 minutes)
+/// - NixOS builds: 600 seconds (10 minutes)
+///
+/// # Examples
+///
+/// ```no_run
+/// use onix_mcp::nix::{BuildTools, NixBuildArgs};
+/// use std::sync::Arc;
+///
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// let audit = Arc::new(/* audit logger */);
+/// let caches = Arc::new(/* cache registry */);
+/// let tools = BuildTools::new(audit, caches);
+///
+/// // Dry-run build to see what would be built
+/// // let result = tools.nix_build(Parameters(NixBuildArgs {
+/// //     package: "nixpkgs#hello".to_string(),
+/// //     dry_run: Some(true),
+/// // })).await?;
+/// # Ok(())
+/// # }
+/// ```
 pub struct BuildTools {
     audit: Arc<AuditLogger>,
-    closure_size_cache: Arc<TtlCache<String, String>>,
-    derivation_cache: Arc<TtlCache<String, String>>,
+    caches: Arc<CacheRegistry>,
 }
 
 impl BuildTools {
-    pub fn new(
-        audit: Arc<AuditLogger>,
-        closure_size_cache: Arc<TtlCache<String, String>>,
-        derivation_cache: Arc<TtlCache<String, String>>,
-    ) -> Self {
-        Self {
-            audit,
-            closure_size_cache,
-            derivation_cache,
-        }
+    /// Creates a new `BuildTools` instance with audit logging and caching.
+    ///
+    /// # Arguments
+    ///
+    /// * `audit` - Shared audit logger for security event logging
+    /// * `caches` - Shared cache registry containing closure_size and derivation caches
+    pub fn new(audit: Arc<AuditLogger>, caches: Arc<CacheRegistry>) -> Self {
+        Self { audit, caches }
     }
 }
 
@@ -315,12 +356,12 @@ impl BuildTools {
         let cache_key = package.clone();
 
         // Check cache first
-        if let Some(cached_result) = self.derivation_cache.get(&cache_key) {
+        if let Some(cached_result) = self.caches.derivation.get(&cache_key) {
             return Ok(CallToolResult::success(vec![Content::text(cached_result)]));
         }
 
         // Clone cache and key for use in async closure
-        let derivation_cache = self.derivation_cache.clone();
+        let derivation_cache = self.caches.derivation.clone();
         let cache_key_clone = cache_key.clone();
 
         // Wrap tool logic with security
@@ -439,12 +480,12 @@ impl BuildTools {
         let cache_key = format!("{}:{}", package, human_readable.unwrap_or(true));
 
         // Check cache first
-        if let Some(cached_result) = self.closure_size_cache.get(&cache_key) {
+        if let Some(cached_result) = self.caches.closure_size.get(&cache_key) {
             return Ok(CallToolResult::success(vec![Content::text(cached_result)]));
         }
 
         // Clone cache and key for use in async closure
-        let closure_size_cache = self.closure_size_cache.clone();
+        let closure_size_cache = self.caches.closure_size.clone();
         let cache_key_clone = cache_key.clone();
 
         // Wrap tool logic with security

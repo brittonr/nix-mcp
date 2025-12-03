@@ -6,12 +6,76 @@ use rmcp::ErrorData as McpError;
 use rmcp::{tool, tool_router};
 use std::sync::Arc;
 
-/// Nix informational tools
+/// Informational tools providing Nix documentation and ecosystem guidance.
+///
+/// This struct provides read-only informational tools that help users learn
+/// about Nix commands, patterns, and ecosystem tools. These tools do not
+/// execute commands or modify state - they only return helpful documentation.
+///
+/// # Available Operations
+///
+/// - **Command Help**: [`nix_command_help`](Self::nix_command_help)
+/// - **Ecosystem Info**: [`ecosystem_tools`](Self::ecosystem_tools)
+///
+/// # Caching Strategy
+///
+/// No caching needed (static documentation content).
+///
+/// # Security
+///
+/// All operations are read-only and logged:
+/// - No command execution
+/// - No state modification
+/// - Audit logging for usage tracking
+///
+/// # Coverage
+///
+/// **nix_command_help** covers:
+/// - `nix develop` - Development shells
+/// - `nix build` - Building packages
+/// - `nix flake` - Flake management
+/// - `nix run` - Running packages
+/// - `nix shell` - Temporary shells
+///
+/// **ecosystem_tools** covers:
+/// - comma - Run programs without installing
+/// - disko - Declarative disk partitioning
+/// - nixos-generators - Generate NixOS images
+/// - alejandra - Nix code formatter
+/// - statix - Nix linter
+/// - And more...
+///
+/// # Examples
+///
+/// ```no_run
+/// use onix_mcp::nix::InfoTools;
+/// use onix_mcp::nix::types::NixCommandHelpArgs;
+/// use rmcp::handler::server::wrapper::Parameters;
+/// use std::sync::Arc;
+///
+/// # fn example(tools: InfoTools) -> Result<(), Box<dyn std::error::Error>> {
+/// // Get help for nix develop command
+/// let result = tools.nix_command_help(Parameters(NixCommandHelpArgs {
+///     command: Some("develop".to_string()),
+/// }))?;
+/// # Ok(())
+/// # }
+/// ```
 pub struct InfoTools {
     pub audit: Arc<AuditLogger>,
 }
 
 impl InfoTools {
+    /// Creates a new `InfoTools` instance with audit logging.
+    ///
+    /// # Arguments
+    ///
+    /// * `audit` - Shared audit logger for usage tracking
+    ///
+    /// # Note
+    ///
+    /// InfoTools contains only synchronous, read-only operations that
+    /// return static documentation. No caching or timeouts are needed.
     pub fn new(audit: Arc<AuditLogger>) -> Self {
         Self { audit }
     }

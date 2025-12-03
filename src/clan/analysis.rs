@@ -1,5 +1,5 @@
 use crate::common::security::helpers::{audit_tool_execution, with_timeout};
-use crate::common::security::AuditLogger;
+use crate::common::security::{validate_flake_ref, validation_error_to_mcp, AuditLogger};
 use rmcp::{
     handler::server::wrapper::Parameters, model::*, tool, tool_router, ErrorData as McpError,
 };
@@ -10,11 +10,79 @@ use super::types::{
     ClanFlakeCreateArgs, ClanSecretsListArgs, ClanVmCreateArgs,
 };
 
+/// Tools for analyzing Clan infrastructure and managing flakes.
+///
+/// This struct provides operations for analyzing Clan infrastructure configurations,
+/// understanding relationships between machines, secrets, and users, as well as
+/// creating flakes and testing VMs. These tools help maintain and understand
+/// complex Clan deployments.
+///
+/// # Available Operations
+///
+/// - **Infrastructure Analysis**: [`clan_analyze_secrets`](Self::clan_analyze_secrets), [`clan_analyze_vars`](Self::clan_analyze_vars), [`clan_analyze_tags`](Self::clan_analyze_tags), [`clan_analyze_roster`](Self::clan_analyze_roster)
+/// - **Secret Management**: [`clan_secrets_list`](Self::clan_secrets_list)
+/// - **Flake Management**: [`clan_flake_create`](Self::clan_flake_create)
+/// - **Testing**: [`clan_vm_create`](Self::clan_vm_create)
+/// - **Documentation**: [`clan_help`](Self::clan_help)
+///
+/// # Caching Strategy
+///
+/// No caching for analysis tools (infrastructure state changes frequently).
+///
+/// # Timeouts
+///
+/// - Analysis tools: 60 seconds (ACL, vars, tags, roster analysis)
+/// - `clan_secrets_list`: 30 seconds (quick listing)
+/// - `clan_flake_create`: 60 seconds (template creation)
+/// - `clan_vm_create`: 600 seconds (10 minutes - VM build and launch)
+/// - `clan_help`: No timeout (synchronous, read-only)
+///
+/// # Security
+///
+/// All operations include validation and logging:
+/// - Flake references checked for shell metacharacters
+/// - Machine names validated for hostname compliance
+/// - All operations audited with parameters
+///
+/// # Analysis Tools
+///
+/// The analysis tools provide insights into Clan infrastructure:
+/// - **Secrets**: Shows which machines have access to which secrets (ACLs)
+/// - **Vars**: Shows variable ownership and usage across machines
+/// - **Tags**: Shows tag assignments for organizing machines
+/// - **Roster**: Shows user configuration and access across the infrastructure
+///
+/// # Examples
+///
+/// ```no_run
+/// use onix_mcp::clan::AnalysisTools;
+/// use onix_mcp::clan::types::ClanAnalyzeSecretsArgs;
+/// use rmcp::handler::server::wrapper::Parameters;
+/// use std::sync::Arc;
+///
+/// # async fn example(tools: AnalysisTools) -> Result<(), Box<dyn std::error::Error>> {
+/// // Analyze secret ownership across machines
+/// let result = tools.clan_analyze_secrets(Parameters(ClanAnalyzeSecretsArgs {
+///     flake: Some(".".to_string()),
+/// })).await?;
+/// # Ok(())
+/// # }
+/// ```
 pub struct AnalysisTools {
     audit: Arc<AuditLogger>,
 }
 
 impl AnalysisTools {
+    /// Creates a new `AnalysisTools` instance with audit logging.
+    ///
+    /// # Arguments
+    ///
+    /// * `audit` - Shared audit logger for security event logging
+    ///
+    /// # Note
+    ///
+    /// AnalysisTools does not use caching as infrastructure analysis
+    /// must reflect current state, which changes frequently.
     pub fn new(audit: Arc<AuditLogger>) -> Self {
         Self { audit }
     }
@@ -28,6 +96,9 @@ impl AnalysisTools {
         Parameters(ClanAnalyzeSecretsArgs { flake }): Parameters<ClanAnalyzeSecretsArgs>,
     ) -> Result<CallToolResult, McpError> {
         let flake_str = flake.unwrap_or_else(|| ".".to_string());
+
+        // Validate flake path to prevent path traversal
+        validate_flake_ref(&flake_str).map_err(validation_error_to_mcp)?;
 
         audit_tool_execution(&self.audit, "clan_analyze_secrets", Some(serde_json::json!({"flake": &flake_str})), || async {
             with_timeout(&self.audit, "clan_analyze_secrets", 60, || async {
@@ -65,6 +136,9 @@ impl AnalysisTools {
     ) -> Result<CallToolResult, McpError> {
         let flake_str = flake.unwrap_or_else(|| ".".to_string());
 
+        // Validate flake path to prevent path traversal
+        validate_flake_ref(&flake_str).map_err(validation_error_to_mcp)?;
+
         audit_tool_execution(&self.audit, "clan_analyze_vars", Some(serde_json::json!({"flake": &flake_str})), || async {
             with_timeout(&self.audit, "clan_analyze_vars", 60, || async {
                 let mut cmd = tokio::process::Command::new("sh");
@@ -100,6 +174,9 @@ impl AnalysisTools {
     ) -> Result<CallToolResult, McpError> {
         let flake_str = flake.unwrap_or_else(|| ".".to_string());
 
+        // Validate flake path to prevent path traversal
+        validate_flake_ref(&flake_str).map_err(validation_error_to_mcp)?;
+
         audit_tool_execution(&self.audit, "clan_analyze_tags", Some(serde_json::json!({"flake": &flake_str})), || async {
             with_timeout(&self.audit, "clan_analyze_tags", 60, || async {
                 let mut cmd = tokio::process::Command::new("sh");
@@ -134,6 +211,9 @@ impl AnalysisTools {
         Parameters(ClanAnalyzeRosterArgs { flake }): Parameters<ClanAnalyzeRosterArgs>,
     ) -> Result<CallToolResult, McpError> {
         let flake_str = flake.unwrap_or_else(|| ".".to_string());
+
+        // Validate flake path to prevent path traversal
+        validate_flake_ref(&flake_str).map_err(validation_error_to_mcp)?;
 
         audit_tool_execution(&self.audit, "clan_analyze_roster", Some(serde_json::json!({"flake": &flake_str})), || async {
             with_timeout(&self.audit, "clan_analyze_roster", 60, || async {

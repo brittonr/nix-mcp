@@ -10,11 +10,74 @@ use std::sync::Arc;
 
 use super::types::{FormatNixArgs, LintNixArgs, NixFmtArgs, ValidateNixArgs};
 
+/// Tools for Nix code quality: formatting, linting, and validation.
+///
+/// This struct provides operations for improving and validating Nix code quality.
+/// All operations work with code strings or file paths and integrate with common
+/// Nix ecosystem tools like nixpkgs-fmt, alejandra, statix, and deadnix.
+///
+/// # Available Operations
+///
+/// - **Formatting**: [`format_nix`](Self::format_nix), [`nix_fmt`](Self::nix_fmt)
+/// - **Validation**: [`validate_nix`](Self::validate_nix)
+/// - **Linting**: [`lint_nix`](Self::lint_nix)
+///
+/// # Caching Strategy
+///
+/// No caching for quality tools (code changes frequently, operations are fast).
+///
+/// # Timeouts
+///
+/// - `format_nix`: 30 seconds (formatting is quick)
+/// - `nix_fmt`: 60 seconds (may format multiple files)
+/// - `validate_nix`: 30 seconds (parsing is fast)
+/// - `lint_nix`: 30 seconds (analysis is quick)
+///
+/// # Security
+///
+/// All code inputs are validated:
+/// - Nix expressions scanned for dangerous patterns before processing
+/// - Paths validated for traversal and dangerous locations
+/// - All operations include audit logging
+///
+/// # Tool Selection
+///
+/// - **format_nix**: Uses nixpkgs-fmt (prefers) or alejandra (fallback)
+/// - **nix_fmt**: Uses project's configured formatter from flake
+/// - **lint_nix**: Uses statix and/or deadnix (configurable)
+/// - **validate_nix**: Uses nix-instantiate --parse
+///
+/// # Examples
+///
+/// ```no_run
+/// use onix_mcp::nix::QualityTools;
+/// use onix_mcp::nix::types::FormatNixArgs;
+/// use rmcp::handler::server::wrapper::Parameters;
+/// use std::sync::Arc;
+///
+/// # async fn example(tools: QualityTools) -> Result<(), Box<dyn std::error::Error>> {
+/// // Format some Nix code
+/// let result = tools.format_nix(Parameters(FormatNixArgs {
+///     code: "{ pkgs }: pkgs.hello".to_string(),
+/// })).await?;
+/// # Ok(())
+/// # }
+/// ```
 pub struct QualityTools {
     audit: Arc<AuditLogger>,
 }
 
 impl QualityTools {
+    /// Creates a new `QualityTools` instance with audit logging.
+    ///
+    /// # Arguments
+    ///
+    /// * `audit` - Shared audit logger for security event logging
+    ///
+    /// # Note
+    ///
+    /// QualityTools does not use caching as code quality operations are
+    /// fast and code changes frequently during development.
     pub fn new(audit: Arc<AuditLogger>) -> Self {
         Self { audit }
     }
