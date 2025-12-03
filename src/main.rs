@@ -4,6 +4,7 @@ use rmcp::transport::stdio;
 use rmcp::ServiceExt;
 use tracing_subscriber::{self, EnvFilter};
 mod common;
+mod dev;
 
 /// Nix MCP Server - provides tools for Nix package management and development
 /// Run with: nix develop -c cargo run -p mcp-basic-server --features transport-io

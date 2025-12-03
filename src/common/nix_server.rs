@@ -313,27 +313,8 @@ pub struct PexpectCloseArgs {
     pub session_id: String,
 }
 
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct PreCommitRunArgs {
-    /// Run hooks on all files instead of just staged files
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub all_files: Option<bool>,
-    /// Specific hook IDs to run (comma-separated, e.g., "rustfmt,clippy")
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub hook_ids: Option<String>,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct CheckPreCommitStatusArgs {
-    // No parameters needed
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct SetupPreCommitArgs {
-    /// Install hooks immediately after setup
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub install: Option<bool>,
-}
+// Import pre-commit types from dev module
+use crate::dev::{CheckPreCommitStatusArgs, PreCommitRunArgs, SetupPreCommitArgs};
 
 // Clan-specific argument types
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -556,6 +537,8 @@ pub struct NixServer {
     tool_router: ToolRouter<NixServer>,
     prompt_router: PromptRouter<NixServer>,
     audit: Arc<AuditLogger>,
+    // Modular tool implementations
+    precommit_tools: Arc<crate::dev::PreCommitTools>,
     // Cache for expensive nix-locate queries (TTL: 5 minutes)
     locate_cache: Arc<TtlCache<String, String>>,
     // Cache for package search results (TTL: 10 minutes)
@@ -575,10 +558,12 @@ pub struct NixServer {
 #[tool_router]
 impl NixServer {
     pub fn new() -> Self {
+        let audit = audit_logger();
         Self {
             tool_router: Self::tool_router(),
             prompt_router: Self::prompt_router(),
-            audit: audit_logger(),
+            audit: audit.clone(),
+            precommit_tools: Arc::new(crate::dev::PreCommitTools::new(audit.clone())),
             locate_cache: Arc::new(TtlCache::new(Duration::from_secs(300))), // 5 min TTL
             search_cache: Arc::new(TtlCache::new(Duration::from_secs(600))), // 10 min TTL
             package_info_cache: Arc::new(TtlCache::new(Duration::from_secs(1800))), // 30 min TTL
@@ -5000,74 +4985,10 @@ BENEFITS:
     )]
     async fn pre_commit_run(
         &self,
-        Parameters(PreCommitRunArgs {
-            all_files,
-            hook_ids,
-        }): Parameters<PreCommitRunArgs>,
+        args: Parameters<PreCommitRunArgs>,
     ) -> Result<CallToolResult, McpError> {
-        use crate::common::security::helpers::{audit_tool_execution, with_timeout};
-
-        // Wrap tool logic with security
-        audit_tool_execution(
-            &self.audit,
-            "pre_commit_run",
-            Some(serde_json::json!({"all_files": &all_files, "hook_ids": &hook_ids})),
-            || async {
-                with_timeout(&self.audit, "pre_commit_run", 300, || async {
-                    let mut cmd = tokio::process::Command::new("pre-commit");
-                    cmd.arg("run");
-
-                    if all_files.unwrap_or(false) {
-                        cmd.arg("--all-files");
-                    }
-
-                    if let Some(hooks) = hook_ids {
-                        for hook_id in hooks.split(',') {
-                            cmd.arg("--hook-stage").arg("manual");
-                            cmd.arg(hook_id.trim());
-                        }
-                    }
-
-                    let output = cmd.output().await.map_err(|e| {
-                        McpError::internal_error(
-                            format!("Failed to execute pre-commit: {}. Make sure you're in a git repository with pre-commit hooks installed (run 'nix develop' first).", e),
-                            None,
-                        )
-                    })?;
-
-                    let stdout = String::from_utf8_lossy(&output.stdout);
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-
-                    let mut result = String::new();
-                    if !stdout.is_empty() {
-                        result.push_str(&stdout);
-                    }
-                    if !stderr.is_empty() {
-                        if !result.is_empty() {
-                            result.push('\n');
-                        }
-                        result.push_str("STDERR:\n");
-                        result.push_str(&stderr);
-                    }
-
-                    if result.is_empty() {
-                        result = "All pre-commit hooks passed successfully!".to_string();
-                    }
-
-                    // Include exit status information
-                    if !output.status.success() {
-                        result.push_str(&format!(
-                            "\n\nExit code: {}\nSome hooks failed. Fix the issues above and try again.",
-                            output.status.code().unwrap_or(-1)
-                        ));
-                    }
-
-                    Ok(CallToolResult::success(vec![Content::text(result)]))
-                })
-                .await
-            },
-        )
-        .await
+        // Delegate to modular implementation
+        self.precommit_tools.pre_commit_run(args).await
     }
 
     #[tool(
@@ -5076,94 +4997,10 @@ BENEFITS:
     )]
     async fn check_pre_commit_status(
         &self,
-        Parameters(_args): Parameters<CheckPreCommitStatusArgs>,
+        args: Parameters<CheckPreCommitStatusArgs>,
     ) -> Result<CallToolResult, McpError> {
-        use crate::common::security::helpers::audit_tool_execution;
-
-        audit_tool_execution(
-            &self.audit,
-            "check_pre_commit_status",
-            None,
-            || async {
-                let mut result = String::new();
-                let mut warnings = Vec::new();
-
-                // Check if .git directory exists
-                let git_exists = tokio::fs::metadata(".git").await.is_ok();
-                if !git_exists {
-                    result.push_str("❌ Not a git repository (no .git directory found)\n");
-                    return Ok(CallToolResult::success(vec![Content::text(result)]));
-                }
-
-                // Check if pre-commit is installed (in PATH or via nix develop)
-                let pre_commit_check = tokio::process::Command::new("pre-commit")
-                    .arg("--version")
-                    .output()
-                    .await;
-
-                let pre_commit_available = match pre_commit_check {
-                    Ok(output) if output.status.success() => {
-                        let version = String::from_utf8_lossy(&output.stdout);
-                        result.push_str(&format!("✅ pre-commit is available: {}", version.trim()));
-                        true
-                    }
-                    _ => {
-                        result.push_str("⚠️  pre-commit command not found in PATH\n");
-                        result.push_str("   Run 'nix develop' to enter development shell with pre-commit\n");
-                        warnings.push("pre-commit not in PATH");
-                        false
-                    }
-                };
-
-                // Check if .pre-commit-config.yaml exists
-                let config_exists = tokio::fs::metadata(".pre-commit-config.yaml").await.is_ok();
-                if config_exists {
-                    result.push_str("\n✅ .pre-commit-config.yaml found\n");
-                } else {
-                    result.push_str("\n❌ .pre-commit-config.yaml not found\n");
-                    warnings.push("config missing");
-                }
-
-                // Check if hooks are installed in .git/hooks/pre-commit
-                let hook_exists = tokio::fs::metadata(".git/hooks/pre-commit")
-                    .await
-                    .is_ok();
-                if hook_exists {
-                    result.push_str("✅ Git pre-commit hook is installed\n");
-                } else {
-                    result.push_str("❌ Git pre-commit hook not installed\n");
-                    if config_exists && pre_commit_available {
-                        result.push_str("   Run 'pre-commit install' to install hooks\n");
-                        warnings.push("hooks not installed");
-                    }
-                }
-
-                // Summary and recommendations
-                result.push_str("\n--- SUMMARY ---\n");
-                if warnings.is_empty() {
-                    result.push_str("✅ Pre-commit hooks are fully configured and ready to use!\n");
-                } else {
-                    result.push_str("⚠️  Pre-commit hooks are not fully set up.\n\n");
-                    result.push_str("RECOMMENDED ACTIONS:\n");
-
-                    if !pre_commit_available {
-                        result.push_str("1. Enter the Nix development shell: nix develop\n");
-                    }
-
-                    if !config_exists {
-                        result.push_str("2. Pre-commit hooks are typically configured in flake.nix for Nix projects\n");
-                        result.push_str("   Check if your flake.nix has pre-commit-hooks.nix configuration\n");
-                        result.push_str("   Consider using the setup_pre_commit tool to set this up automatically\n");
-                    } else if !hook_exists {
-                        result.push_str("2. Install the hooks: pre-commit install\n");
-                        result.push_str("   Or use: nix develop -c pre-commit install\n");
-                    }
-                }
-
-                Ok(CallToolResult::success(vec![Content::text(result)]))
-            },
-        )
-        .await
+        // Delegate to modular implementation
+        self.precommit_tools.check_pre_commit_status(args).await
     }
 
     #[tool(
@@ -5172,77 +5009,10 @@ BENEFITS:
     )]
     async fn setup_pre_commit(
         &self,
-        Parameters(SetupPreCommitArgs { install }): Parameters<SetupPreCommitArgs>,
+        args: Parameters<SetupPreCommitArgs>,
     ) -> Result<CallToolResult, McpError> {
-        use crate::common::security::helpers::audit_tool_execution;
-
-        audit_tool_execution(
-            &self.audit,
-            "setup_pre_commit",
-            Some(serde_json::json!({"install": &install})),
-            || async {
-                let mut result = String::new();
-
-                // Check if .git directory exists
-                let git_exists = tokio::fs::metadata(".git").await.is_ok();
-                if !git_exists {
-                    return Err(McpError::internal_error(
-                        "Not a git repository. Initialize git first with 'git init'".to_string(),
-                        None,
-                    ));
-                }
-
-                // Check if flake.nix exists
-                let flake_exists = tokio::fs::metadata("flake.nix").await.is_ok();
-
-                if flake_exists {
-                    result.push_str("✅ flake.nix found\n\n");
-                    result.push_str("For Nix projects, pre-commit hooks should be configured in flake.nix using pre-commit-hooks.nix.\n\n");
-                    result.push_str("RECOMMENDED SETUP:\n");
-                    result.push_str("1. Add pre-commit-hooks.nix to flake inputs\n");
-                    result.push_str("2. Configure hooks in the flake\n");
-                    result.push_str("3. Integrate with devShell\n");
-                    result.push_str("4. Enter dev shell: nix develop\n\n");
-                    result.push_str("The hooks will then auto-install when entering the dev shell.\n\n");
-                    result.push_str("See https://github.com/cachix/pre-commit-hooks.nix for examples.\n");
-                } else {
-                    result.push_str("⚠️  No flake.nix found. Setting up basic pre-commit configuration.\n\n");
-                    result.push_str("For better integration with Nix projects, consider using flake.nix with pre-commit-hooks.nix.\n\n");
-                }
-
-                // If install flag is set, run pre-commit install
-                if install.unwrap_or(false) {
-                    result.push_str("Installing pre-commit hooks...\n");
-                    let install_output = tokio::process::Command::new("pre-commit")
-                        .arg("install")
-                        .output()
-                        .await
-                        .map_err(|e| {
-                            McpError::internal_error(
-                                format!("Failed to run pre-commit install: {}. Make sure pre-commit is available (run 'nix develop' first).", e),
-                                None,
-                            )
-                        })?;
-
-                    if install_output.status.success() {
-                        result.push_str("✅ Pre-commit hooks installed successfully!\n");
-                        let stdout = String::from_utf8_lossy(&install_output.stdout);
-                        if !stdout.is_empty() {
-                            result.push_str(&format!("\n{}", stdout));
-                        }
-                    } else {
-                        let stderr = String::from_utf8_lossy(&install_output.stderr);
-                        return Err(McpError::internal_error(
-                            format!("Failed to install pre-commit hooks: {}", stderr),
-                            None,
-                        ));
-                    }
-                }
-
-                Ok(CallToolResult::success(vec![Content::text(result)]))
-            },
-        )
-        .await
+        // Delegate to modular implementation
+        self.precommit_tools.setup_pre_commit(args).await
     }
 }
 
