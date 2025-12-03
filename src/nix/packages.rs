@@ -5,6 +5,7 @@ use crate::common::security::helpers::{
     audit_tool_execution, validation_error_to_mcp, with_timeout,
 };
 use crate::common::security::{validate_command, validate_flake_ref, validate_package_name};
+use crate::common::tool_module::ToolModule;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, Content};
 use rmcp::ErrorData as McpError;
@@ -68,6 +69,16 @@ impl PackageTools {
     /// * `caches` - Shared cache registry containing search, package_info, and locate caches
     pub fn new(audit: Arc<AuditLogger>, caches: Arc<CacheRegistry>) -> Self {
         Self { audit, caches }
+    }
+}
+
+impl ToolModule for PackageTools {
+    fn audit_logger(&self) -> &Arc<AuditLogger> {
+        &self.audit
+    }
+
+    fn name(&self) -> &'static str {
+        "PackageTools"
     }
 }
 

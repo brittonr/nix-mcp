@@ -7,6 +7,7 @@
 //! - [`cache`] - TTL-based cache implementation for expensive operations
 //! - [`cache_registry`] - Centralized cache management across all tools
 //! - [`tool_registry`] - Central registry for all tool module instances
+//! - [`tool_module`] - Common trait for all MCP tool modules
 //! - [`security`] - Input validation, audit logging, and security utilities
 //! - [`nix_server`] - Main MCP server implementation
 //! - [`nix_tools_helpers`] - Helper functions for Nix tool implementations
@@ -33,4 +34,5 @@ pub mod command;
 pub mod nix_server;
 pub mod nix_tools_helpers;
 pub mod security;
+pub mod tool_module;
 pub mod tool_registry;
