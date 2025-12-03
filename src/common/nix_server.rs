@@ -201,6 +201,15 @@ pub struct NixRunArgs {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct CommaArgs {
+    /// Command to find and run (e.g., "cowsay", "hello", "htop")
+    pub command: String,
+    /// Arguments to pass to the command
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub args: Option<Vec<String>>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct NixDevelopArgs {
     /// Flake reference for development shell (e.g., ".", "github:owner/repo")
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -458,6 +467,28 @@ pub struct TaploArgs {
     /// Check formatting without making changes
     #[serde(skip_serializing_if = "Option::is_none")]
     pub check: Option<bool>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct PreCommitRunArgs {
+    /// Run hooks on all files instead of just staged files
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub all_files: Option<bool>,
+    /// Specific hook IDs to run (comma-separated, e.g., "rustfmt,clippy")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hook_ids: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct CheckPreCommitStatusArgs {
+    // No parameters needed
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct SetupPreCommitArgs {
+    /// Install hooks immediately after setup
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub install: Option<bool>,
 }
 
 // Clan-specific argument types
@@ -896,8 +927,12 @@ impl NixServer {
         validate_package_name(&query).map_err(validation_error_to_mcp)?;
 
         // Execute with security features (audit logging + timeout)
-        audit_tool_execution(&self.audit, "search_options", Some(serde_json::json!({"query": &query})), || async {
-            with_timeout(&self.audit, "search_options", 30, || async {
+        audit_tool_execution(
+            &self.audit,
+            "search_options",
+            Some(serde_json::json!({"query": &query})),
+            || async {
+                with_timeout(&self.audit, "search_options", 30, || async {
                     // Check if we're on NixOS and can query options directly
                     let nixos_check = tokio::process::Command::new("sh")
                         .arg("-c")
@@ -917,7 +952,9 @@ impl NixServer {
                         if let Ok(output) = output {
                             if output.status.success() {
                                 let stdout = String::from_utf8_lossy(&output.stdout);
-                                return Ok(CallToolResult::success(vec![Content::text(stdout.to_string())]));
+                                return Ok(CallToolResult::success(vec![Content::text(
+                                    stdout.to_string(),
+                                )]));
                             }
                         }
                     }
@@ -925,10 +962,13 @@ impl NixServer {
                     // Provide helpful information with web search links
                     use crate::common::nix_tools_helpers::format_option_search_response;
                     Ok(CallToolResult::success(vec![Content::text(
-                        format_option_search_response(&query)
+                        format_option_search_response(&query),
                     )]))
-            }).await
-        }).await
+                })
+                .await
+            },
+        )
+        .await
     }
 
     #[tool(description = "Evaluate a Nix expression")]
@@ -2004,6 +2044,87 @@ Example: ecosystem_tools(tool="comma") or ecosystem_tools(tool="crane")"#
         }).await
     }
 
+    #[tool(
+        description = "Run a command without installing it using comma (automatically finds and runs commands from nixpkgs)"
+    )]
+    async fn comma(
+        &self,
+        Parameters(CommaArgs { command, args }): Parameters<CommaArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        use crate::common::security::helpers::{audit_tool_execution, with_timeout};
+        use crate::common::security::validate_command;
+
+        // Validate command name
+        validate_command(&command).map_err(validation_error_to_mcp)?;
+
+        // Wrap tool logic with security
+        audit_tool_execution(
+            &self.audit,
+            "comma",
+            Some(serde_json::json!({"command": &command, "args": &args})),
+            || async {
+                with_timeout(&self.audit, "comma", 300, || async {
+                    // Use the actual comma command
+                    let mut cmd = tokio::process::Command::new(",");
+                    cmd.arg(&command);
+
+                    if let Some(ref program_args) = args {
+                        for arg in program_args {
+                            cmd.arg(arg);
+                        }
+                    }
+
+                    let output = cmd.output().await;
+
+                    match output {
+                        Ok(output) => {
+                            let stdout = String::from_utf8_lossy(&output.stdout);
+                            let stderr = String::from_utf8_lossy(&output.stderr);
+
+                            let mut result = String::new();
+                            if !stdout.is_empty() {
+                                result.push_str(&stdout);
+                            }
+                            if !stderr.is_empty() {
+                                if !result.is_empty() {
+                                    result.push('\n');
+                                }
+                                result.push_str(&stderr);
+                            }
+
+                            if result.is_empty() {
+                                result = format!(
+                                    "Command completed (exit code: {})",
+                                    output.status.code().unwrap_or(0)
+                                );
+                            }
+
+                            Ok(CallToolResult::success(vec![Content::text(result)]))
+                        }
+                        Err(_) => {
+                            // Comma not available, provide installation instructions
+                            Ok(CallToolResult::success(vec![Content::text(format!(
+                                "The 'comma' tool is not available.\n\n\
+                                Install with:\n\
+                                - nix-env -iA nixpkgs.comma\n\
+                                - Or add to your NixOS configuration: environment.systemPackages = [ pkgs.comma ];\n\n\
+                                Comma requires nix-index. Install and update it:\n\
+                                - nix-shell -p nix-index --run nix-index\n\n\
+                                Alternatively, try:\n\
+                                - nix run nixpkgs#{} -- {}",
+                                command,
+                                args.as_ref()
+                                    .map(|a| a.join(" "))
+                                    .unwrap_or_default()
+                            ))])) }
+                    }
+                })
+                .await
+            },
+        )
+        .await
+    }
+
     #[tool(description = "Build a Nix package and show what will be built or the build output")]
     async fn nix_build(
         &self,
@@ -2174,7 +2295,7 @@ Example: ecosystem_tools(tool="comma") or ecosystem_tools(tool="crane")"#
 
                     let package_path = build_json
                         .as_array()
-                        .and_then(|arr| arr.get(0))
+                        .and_then(|arr| arr.first())
                         .and_then(|item| item.get("outputs"))
                         .and_then(|outputs| outputs.get("out"))
                         .and_then(|out| out.as_str())
@@ -2216,7 +2337,7 @@ Example: ecosystem_tools(tool="comma") or ecosystem_tools(tool="crane")"#
 
                     let dependency_path = dep_json
                         .as_array()
-                        .and_then(|arr| arr.get(0))
+                        .and_then(|arr| arr.first())
                         .and_then(|item| item.get("outputs"))
                         .and_then(|outputs| outputs.get("out"))
                         .and_then(|out| out.as_str())
@@ -2448,7 +2569,7 @@ Example: ecosystem_tools(tool="comma") or ecosystem_tools(tool="crane")"#
 
                 let package_path = build_json
                     .as_array()
-                    .and_then(|arr| arr.get(0))
+                    .and_then(|arr| arr.first())
                     .and_then(|item| item.get("outputs"))
                     .and_then(|outputs| outputs.get("out"))
                     .and_then(|out| out.as_str())
@@ -2657,25 +2778,21 @@ Example: ecosystem_tools(tool="comma") or ecosystem_tools(tool="crane")"#
                             prefix: String,
                             result: &mut String,
                         ) {
-                            match value {
-                                serde_json::Value::Object(map) => {
-                                    for (key, val) in map {
-                                        if val.is_object()
-                                            && val.as_object().unwrap().contains_key("type")
-                                        {
-                                            let type_str =
-                                                val["type"].as_str().unwrap_or("unknown");
-                                            result.push_str(&format!(
-                                                "{}  {}: {}\n",
-                                                prefix, key, type_str
-                                            ));
-                                        } else if val.is_object() {
-                                            result.push_str(&format!("{}{}:\n", prefix, key));
-                                            format_outputs(val, format!("{}  ", prefix), result);
-                                        }
+                            if let serde_json::Value::Object(map) = value {
+                                for (key, val) in map {
+                                    if val.is_object()
+                                        && val.as_object().unwrap().contains_key("type")
+                                    {
+                                        let type_str = val["type"].as_str().unwrap_or("unknown");
+                                        result.push_str(&format!(
+                                            "{}  {}: {}\n",
+                                            prefix, key, type_str
+                                        ));
+                                    } else if val.is_object() {
+                                        result.push_str(&format!("{}{}:\n", prefix, key));
+                                        format_outputs(val, format!("{}  ", prefix), result);
                                     }
                                 }
-                                _ => {}
                             }
                         }
 
@@ -2910,14 +3027,14 @@ Example: ecosystem_tools(tool="comma") or ecosystem_tools(tool="crane")"#
 
                 let drv_a = json_a
                     .as_array()
-                    .and_then(|arr| arr.get(0))
+                    .and_then(|arr| arr.first())
                     .and_then(|item| item.get("drvPath"))
                     .and_then(|drv| drv.as_str())
                     .ok_or_else(|| McpError::internal_error("Failed to get derivation path A".to_string(), None))?;
 
                 let drv_b = json_b
                     .as_array()
-                    .and_then(|arr| arr.get(0))
+                    .and_then(|arr| arr.first())
                     .and_then(|item| item.get("drvPath"))
                     .and_then(|drv| drv.as_str())
                     .ok_or_else(|| McpError::internal_error("Failed to get derivation path B".to_string(), None))?;
@@ -3732,9 +3849,7 @@ Example: ecosystem_tools(tool="comma") or ecosystem_tools(tool="crane")"#
         }).await
     }
 
-    #[tool(
-        description = "Build a NixOS machine configuration from a flake"
-    )]
+    #[tool(description = "Build a NixOS machine configuration from a flake")]
     async fn nixos_build(
         &self,
         Parameters(NixosBuildArgs {
@@ -3793,9 +3908,7 @@ Example: ecosystem_tools(tool="comma") or ecosystem_tools(tool="crane")"#
         }).await
     }
 
-    #[tool(
-        description = "Analyze Clan secret (ACL) ownership across machines"
-    )]
+    #[tool(description = "Analyze Clan secret (ACL) ownership across machines")]
     async fn clan_analyze_secrets(
         &self,
         Parameters(ClanAnalyzeSecretsArgs { flake }): Parameters<ClanAnalyzeSecretsArgs>,
@@ -3832,9 +3945,7 @@ Example: ecosystem_tools(tool="comma") or ecosystem_tools(tool="crane")"#
         }).await
     }
 
-    #[tool(
-        description = "Analyze Clan vars ownership across machines"
-    )]
+    #[tool(description = "Analyze Clan vars ownership across machines")]
     async fn clan_analyze_vars(
         &self,
         Parameters(ClanAnalyzeVarsArgs { flake }): Parameters<ClanAnalyzeVarsArgs>,
@@ -3870,9 +3981,7 @@ Example: ecosystem_tools(tool="comma") or ecosystem_tools(tool="crane")"#
         }).await
     }
 
-    #[tool(
-        description = "Analyze Clan machine tags across the infrastructure"
-    )]
+    #[tool(description = "Analyze Clan machine tags across the infrastructure")]
     async fn clan_analyze_tags(
         &self,
         Parameters(ClanAnalyzeTagsArgs { flake }): Parameters<ClanAnalyzeTagsArgs>,
@@ -3908,9 +4017,7 @@ Example: ecosystem_tools(tool="comma") or ecosystem_tools(tool="crane")"#
         }).await
     }
 
-    #[tool(
-        description = "Analyze Clan user roster configurations"
-    )]
+    #[tool(description = "Analyze Clan user roster configurations")]
     async fn clan_analyze_roster(
         &self,
         Parameters(ClanAnalyzeRosterArgs { flake }): Parameters<ClanAnalyzeRosterArgs>,
@@ -4187,7 +4294,7 @@ BENEFITS:
                     if !stdout.is_empty() {
                         result.push_str("STDOUT:\n");
                         result.push_str(&stdout);
-                        result.push_str("\n");
+                        result.push('\n');
                     }
                     if !stderr.is_empty() {
                         result.push_str("STDERR:\n");
@@ -4274,7 +4381,7 @@ BENEFITS:
                     if !stdout.is_empty() {
                         result.push_str("STDOUT:\n");
                         result.push_str(&stdout);
-                        result.push_str("\n");
+                        result.push('\n');
                     }
                     if !stderr.is_empty() {
                         result.push_str("STDERR:\n");
@@ -4354,7 +4461,7 @@ BENEFITS:
                     }
                     if !stderr.is_empty() {
                         if !result.is_empty() {
-                            result.push_str("\n");
+                            result.push('\n');
                         }
                         result.push_str(&stderr);
                     }
@@ -4964,7 +5071,7 @@ BENEFITS:
                     }
                     if !stderr.is_empty() {
                         if !result.is_empty() {
-                            result.push_str("\n");
+                            result.push('\n');
                         }
                         result.push_str("STDERR:\n");
                         result.push_str(&stderr);
@@ -5100,7 +5207,7 @@ BENEFITS:
                     }
                     if !stdout.is_empty() {
                         if !result.is_empty() {
-                            result.push_str("\n");
+                            result.push('\n');
                         }
                         result.push_str(&stdout);
                     }
@@ -5184,7 +5291,7 @@ BENEFITS:
                     }
                     if !stdout.is_empty() {
                         if !result.is_empty() {
-                            result.push_str("\n");
+                            result.push('\n');
                         }
                         result.push_str(&stdout);
                     }
@@ -5274,7 +5381,7 @@ BENEFITS:
                     }
                     if !stdout.is_empty() {
                         if !result.is_empty() {
-                            result.push_str("\n");
+                            result.push('\n');
                         }
                         result.push_str(&stdout);
                     }
@@ -5359,7 +5466,7 @@ BENEFITS:
                     }
                     if !stdout.is_empty() {
                         if !result.is_empty() {
-                            result.push_str("\n");
+                            result.push('\n');
                         }
                         result.push_str(&stdout);
                     }
@@ -5453,7 +5560,7 @@ BENEFITS:
                     }
                     if !stdout.is_empty() {
                         if !result.is_empty() {
-                            result.push_str("\n");
+                            result.push('\n');
                         }
                         result.push_str(&stdout);
                     }
@@ -5537,7 +5644,7 @@ BENEFITS:
                     }
                     if !stdout.is_empty() {
                         if !result.is_empty() {
-                            result.push_str("\n");
+                            result.push('\n');
                         }
                         result.push_str(&stdout);
                     }
@@ -5612,7 +5719,7 @@ BENEFITS:
                     }
                     if !stdout.is_empty() {
                         if !result.is_empty() {
-                            result.push_str("\n");
+                            result.push('\n');
                         }
                         result.push_str(&stdout);
                     }
@@ -5677,7 +5784,7 @@ BENEFITS:
                     }
                     if !stdout.is_empty() {
                         if !result.is_empty() {
-                            result.push_str("\n");
+                            result.push('\n');
                         }
                         result.push_str(&stdout);
                     }
@@ -5744,7 +5851,7 @@ BENEFITS:
                     }
                     if !stderr.is_empty() {
                         if !result.is_empty() {
-                            result.push_str("\n");
+                            result.push('\n');
                         }
                         result.push_str(&stderr);
                     }
@@ -5818,7 +5925,7 @@ BENEFITS:
                     }
                     if !stderr.is_empty() {
                         if !result.is_empty() {
-                            result.push_str("\n");
+                            result.push('\n');
                         }
                         result.push_str(&stderr);
                     }
@@ -5890,7 +5997,7 @@ BENEFITS:
                     }
                     if !stderr.is_empty() {
                         if !result.is_empty() {
-                            result.push_str("\n");
+                            result.push('\n');
                         }
                         result.push_str(&stderr);
                     }
@@ -5953,7 +6060,7 @@ BENEFITS:
                     }
                     if !stderr.is_empty() {
                         if !result.is_empty() {
-                            result.push_str("\n");
+                            result.push('\n');
                         }
                         result.push_str(&stderr);
                     }
@@ -5969,6 +6076,257 @@ BENEFITS:
                     Ok(CallToolResult::success(vec![Content::text(result)]))
                 })
                 .await
+            },
+        )
+        .await
+    }
+
+    #[tool(
+        description = "Run pre-commit hooks to check code quality (formatting, linting, etc.)",
+        annotations(read_only_hint = false)
+    )]
+    async fn pre_commit_run(
+        &self,
+        Parameters(PreCommitRunArgs {
+            all_files,
+            hook_ids,
+        }): Parameters<PreCommitRunArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        use crate::common::security::helpers::{audit_tool_execution, with_timeout};
+
+        // Wrap tool logic with security
+        audit_tool_execution(
+            &self.audit,
+            "pre_commit_run",
+            Some(serde_json::json!({"all_files": &all_files, "hook_ids": &hook_ids})),
+            || async {
+                with_timeout(&self.audit, "pre_commit_run", 300, || async {
+                    let mut cmd = tokio::process::Command::new("pre-commit");
+                    cmd.arg("run");
+
+                    if all_files.unwrap_or(false) {
+                        cmd.arg("--all-files");
+                    }
+
+                    if let Some(hooks) = hook_ids {
+                        for hook_id in hooks.split(',') {
+                            cmd.arg("--hook-stage").arg("manual");
+                            cmd.arg(hook_id.trim());
+                        }
+                    }
+
+                    let output = cmd.output().await.map_err(|e| {
+                        McpError::internal_error(
+                            format!("Failed to execute pre-commit: {}. Make sure you're in a git repository with pre-commit hooks installed (run 'nix develop' first).", e),
+                            None,
+                        )
+                    })?;
+
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+
+                    let mut result = String::new();
+                    if !stdout.is_empty() {
+                        result.push_str(&stdout);
+                    }
+                    if !stderr.is_empty() {
+                        if !result.is_empty() {
+                            result.push('\n');
+                        }
+                        result.push_str("STDERR:\n");
+                        result.push_str(&stderr);
+                    }
+
+                    if result.is_empty() {
+                        result = "All pre-commit hooks passed successfully!".to_string();
+                    }
+
+                    // Include exit status information
+                    if !output.status.success() {
+                        result.push_str(&format!(
+                            "\n\nExit code: {}\nSome hooks failed. Fix the issues above and try again.",
+                            output.status.code().unwrap_or(-1)
+                        ));
+                    }
+
+                    Ok(CallToolResult::success(vec![Content::text(result)]))
+                })
+                .await
+            },
+        )
+        .await
+    }
+
+    #[tool(
+        description = "Check if pre-commit hooks are installed and configured in the current repository",
+        annotations(read_only_hint = true)
+    )]
+    async fn check_pre_commit_status(
+        &self,
+        Parameters(_args): Parameters<CheckPreCommitStatusArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        use crate::common::security::helpers::audit_tool_execution;
+
+        audit_tool_execution(
+            &self.audit,
+            "check_pre_commit_status",
+            None,
+            || async {
+                let mut result = String::new();
+                let mut warnings = Vec::new();
+
+                // Check if .git directory exists
+                let git_exists = tokio::fs::metadata(".git").await.is_ok();
+                if !git_exists {
+                    result.push_str("❌ Not a git repository (no .git directory found)\n");
+                    return Ok(CallToolResult::success(vec![Content::text(result)]));
+                }
+
+                // Check if pre-commit is installed (in PATH or via nix develop)
+                let pre_commit_check = tokio::process::Command::new("pre-commit")
+                    .arg("--version")
+                    .output()
+                    .await;
+
+                let pre_commit_available = match pre_commit_check {
+                    Ok(output) if output.status.success() => {
+                        let version = String::from_utf8_lossy(&output.stdout);
+                        result.push_str(&format!("✅ pre-commit is available: {}", version.trim()));
+                        true
+                    }
+                    _ => {
+                        result.push_str("⚠️  pre-commit command not found in PATH\n");
+                        result.push_str("   Run 'nix develop' to enter development shell with pre-commit\n");
+                        warnings.push("pre-commit not in PATH");
+                        false
+                    }
+                };
+
+                // Check if .pre-commit-config.yaml exists
+                let config_exists = tokio::fs::metadata(".pre-commit-config.yaml").await.is_ok();
+                if config_exists {
+                    result.push_str("\n✅ .pre-commit-config.yaml found\n");
+                } else {
+                    result.push_str("\n❌ .pre-commit-config.yaml not found\n");
+                    warnings.push("config missing");
+                }
+
+                // Check if hooks are installed in .git/hooks/pre-commit
+                let hook_exists = tokio::fs::metadata(".git/hooks/pre-commit")
+                    .await
+                    .is_ok();
+                if hook_exists {
+                    result.push_str("✅ Git pre-commit hook is installed\n");
+                } else {
+                    result.push_str("❌ Git pre-commit hook not installed\n");
+                    if config_exists && pre_commit_available {
+                        result.push_str("   Run 'pre-commit install' to install hooks\n");
+                        warnings.push("hooks not installed");
+                    }
+                }
+
+                // Summary and recommendations
+                result.push_str("\n--- SUMMARY ---\n");
+                if warnings.is_empty() {
+                    result.push_str("✅ Pre-commit hooks are fully configured and ready to use!\n");
+                } else {
+                    result.push_str("⚠️  Pre-commit hooks are not fully set up.\n\n");
+                    result.push_str("RECOMMENDED ACTIONS:\n");
+
+                    if !pre_commit_available {
+                        result.push_str("1. Enter the Nix development shell: nix develop\n");
+                    }
+
+                    if !config_exists {
+                        result.push_str("2. Pre-commit hooks are typically configured in flake.nix for Nix projects\n");
+                        result.push_str("   Check if your flake.nix has pre-commit-hooks.nix configuration\n");
+                        result.push_str("   Consider using the setup_pre_commit tool to set this up automatically\n");
+                    } else if !hook_exists {
+                        result.push_str("2. Install the hooks: pre-commit install\n");
+                        result.push_str("   Or use: nix develop -c pre-commit install\n");
+                    }
+                }
+
+                Ok(CallToolResult::success(vec![Content::text(result)]))
+            },
+        )
+        .await
+    }
+
+    #[tool(
+        description = "Set up pre-commit hooks for a project (creates config and installs hooks)",
+        annotations(read_only_hint = false)
+    )]
+    async fn setup_pre_commit(
+        &self,
+        Parameters(SetupPreCommitArgs { install }): Parameters<SetupPreCommitArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        use crate::common::security::helpers::audit_tool_execution;
+
+        audit_tool_execution(
+            &self.audit,
+            "setup_pre_commit",
+            Some(serde_json::json!({"install": &install})),
+            || async {
+                let mut result = String::new();
+
+                // Check if .git directory exists
+                let git_exists = tokio::fs::metadata(".git").await.is_ok();
+                if !git_exists {
+                    return Err(McpError::internal_error(
+                        "Not a git repository. Initialize git first with 'git init'".to_string(),
+                        None,
+                    ));
+                }
+
+                // Check if flake.nix exists
+                let flake_exists = tokio::fs::metadata("flake.nix").await.is_ok();
+
+                if flake_exists {
+                    result.push_str("✅ flake.nix found\n\n");
+                    result.push_str("For Nix projects, pre-commit hooks should be configured in flake.nix using pre-commit-hooks.nix.\n\n");
+                    result.push_str("RECOMMENDED SETUP:\n");
+                    result.push_str("1. Add pre-commit-hooks.nix to flake inputs\n");
+                    result.push_str("2. Configure hooks in the flake\n");
+                    result.push_str("3. Integrate with devShell\n");
+                    result.push_str("4. Enter dev shell: nix develop\n\n");
+                    result.push_str("The hooks will then auto-install when entering the dev shell.\n\n");
+                    result.push_str("See https://github.com/cachix/pre-commit-hooks.nix for examples.\n");
+                } else {
+                    result.push_str("⚠️  No flake.nix found. Setting up basic pre-commit configuration.\n\n");
+                    result.push_str("For better integration with Nix projects, consider using flake.nix with pre-commit-hooks.nix.\n\n");
+                }
+
+                // If install flag is set, run pre-commit install
+                if install.unwrap_or(false) {
+                    result.push_str("Installing pre-commit hooks...\n");
+                    let install_output = tokio::process::Command::new("pre-commit")
+                        .arg("install")
+                        .output()
+                        .await
+                        .map_err(|e| {
+                            McpError::internal_error(
+                                format!("Failed to run pre-commit install: {}. Make sure pre-commit is available (run 'nix develop' first).", e),
+                                None,
+                            )
+                        })?;
+
+                    if install_output.status.success() {
+                        result.push_str("✅ Pre-commit hooks installed successfully!\n");
+                        let stdout = String::from_utf8_lossy(&install_output.stdout);
+                        if !stdout.is_empty() {
+                            result.push_str(&format!("\n{}", stdout));
+                        }
+                    } else {
+                        let stderr = String::from_utf8_lossy(&install_output.stderr);
+                        return Err(McpError::internal_error(
+                            format!("Failed to install pre-commit hooks: {}", stderr),
+                            None,
+                        ));
+                    }
+                }
+
+                Ok(CallToolResult::success(vec![Content::text(result)]))
             },
         )
         .await
@@ -6165,11 +6523,16 @@ impl ServerHandler for NixServer {
                 "This server provides comprehensive Nix package management, development tools, and Clan infrastructure management. \
                 \n\n=== NIX TOOLS === \
                 \n\nPackage Discovery: search_packages, explain_package, get_package_info, find_command \
-                \n\nBuild & Execution: nix_build, run_in_shell, get_closure_size, get_build_log \
+                \n\nBuild & Execution: nix_build, nix_run, comma, run_in_shell, get_closure_size, get_build_log \
                 \n\nDependency Analysis: why_depends, show_derivation, diff_derivations \
                 \n\nFlake Management: flake_metadata, flake_show \
-                \n\nCode Quality: validate_nix, lint_nix, format_nix \
+                \n\nCode Quality: validate_nix, lint_nix, format_nix, pre_commit_run, check_pre_commit_status, setup_pre_commit \
                 \n\nUtilities: nix_eval, prefetch_url, search_options, nix_command_help, ecosystem_tools \
+                \n\n=== PROACTIVE CODE QUALITY CHECKS === \
+                \n\nWhen working with a git repository, PROACTIVELY check if pre-commit hooks are set up using check_pre_commit_status. \
+                If they are not configured, suggest setting them up with setup_pre_commit or by adding pre-commit-hooks.nix to the flake. \
+                Pre-commit hooks enforce code quality standards (formatting, linting) before commits. \
+                \n\nBest practice: Run check_pre_commit_status when starting work on a project to ensure quality tooling is in place. \
                 \n\n=== CLAN TOOLS === \
                 \n\nClan is a peer-to-peer NixOS management framework for declarative infrastructure. \
                 \n\nMachine Management: \
@@ -6197,6 +6560,7 @@ impl ServerHandler for NixServer {
                 - Manage distributed NixOS infrastructure with Clan \
                 - Declarative machine deployment and configuration \
                 - Automated backup and restore for Clan machines \
+                - Enforce code quality with pre-commit hooks (check and run via MCP tools) \
                 \n\nIMPORTANT: You can use 'nix-shell -p <package>' to get any nixpkgs package in a temporary shell, \
                 or 'nix shell nixpkgs#<package>' with flakes. Use run_in_shell to execute commands in these environments. \
                 \n\nFor Clan: All tools support --flake parameter to specify the Clan directory (defaults to current directory)."
@@ -6438,7 +6802,7 @@ Use the 'ecosystem_tools' tool to get detailed information about any of these to
                                         {
                                             formatted.push_str(&format!("Version: {}\n", version));
                                         }
-                                        formatted.push_str("\n");
+                                        formatted.push('\n');
                                     }
                                     formatted
                                 } else {

@@ -1,11 +1,12 @@
-/// Helper functions for nix tools that can be unit tested
-/// This separates business logic from MCP handler code
+//! Helper functions for nix tools that can be unit tested
+//! This separates business logic from MCP handler code
 
 /// Extract flake reference from a package string
 /// Examples:
 /// - ".#package" -> "."
 /// - "github:owner/repo#pkg" -> "github:owner/repo"
 /// - "." -> "."
+#[allow(dead_code)]
 pub fn extract_flake_ref(package: &str) -> String {
     if package == "." || package.starts_with("./") || package.starts_with("/") {
         package.to_string()
@@ -17,6 +18,7 @@ pub fn extract_flake_ref(package: &str) -> String {
 }
 
 /// Format error message for missing package with available alternatives
+#[allow(dead_code)]
 pub fn format_missing_package_error(
     package: &str,
     available_packages: Vec<String>,
@@ -37,7 +39,8 @@ pub fn format_missing_package_error(
         }
         error_msg.push_str("\nTry using one of these package references.");
     } else {
-        error_msg.push_str("No packages found in flake. Run 'nix flake show' to see available outputs.");
+        error_msg
+            .push_str("No packages found in flake. Run 'nix flake show' to see available outputs.");
     }
 
     error_msg.push_str(&format!("\n\nOriginal error:\n{}", original_error));
@@ -127,7 +130,10 @@ mod tests {
 
     #[test]
     fn test_encode_option_query() {
-        assert_eq!(encode_option_query("networking.hostName"), "networking%2EhostName");
+        assert_eq!(
+            encode_option_query("networking.hostName"),
+            "networking%2EhostName"
+        );
         assert_eq!(
             encode_option_query("services.nginx.enable"),
             "services%2Enginx%2Eenable"
@@ -141,7 +147,9 @@ mod tests {
         let response = format_option_search_response("networking.hostName");
 
         assert!(response.contains("NixOS option search for 'networking.hostName'"));
-        assert!(response.contains("https://search.nixos.org/options?channel=unstable&query=networking%2EhostName"));
+        assert!(response.contains(
+            "https://search.nixos.org/options?channel=unstable&query=networking%2EhostName"
+        ));
         assert!(response.contains("nixos-option networking.hostName"));
         assert!(response.contains("man configuration.nix"));
     }

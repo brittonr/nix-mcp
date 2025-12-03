@@ -17,17 +17,22 @@
       url = "git+https://git.clan.lol/clan/clan-core";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+
+    pre-commit-hooks = {
+      url = "github:cachix/pre-commit-hooks.nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
-    {
-      self,
-      nixpkgs,
-      crane,
-      flake-utils,
-      advisory-db,
-      clan-core,
-      ...
+    { self
+    , nixpkgs
+    , crane
+    , flake-utils
+    , advisory-db
+    , clan-core
+    , pre-commit-hooks
+    , ...
     }:
     flake-utils.lib.eachDefaultSystem (
       system:
@@ -38,6 +43,39 @@
 
         craneLib = crane.mkLib pkgs;
         src = craneLib.cleanCargoSource ./.;
+
+        # Pre-commit hooks configuration
+        pre-commit-check = pre-commit-hooks.lib.${system}.run {
+          src = ./.;
+          hooks = {
+            # Rust formatting
+            rustfmt = {
+              enable = true;
+              description = "Format Rust code with cargo fmt";
+            };
+
+            # Rust linting
+            # Disabled in pre-commit-check to avoid sandbox network access issues
+            # Clippy still runs via checks.onix-mcp-clippy and locally on commits
+            clippy = {
+              enable = false;
+              description = "Lint Rust code with clippy";
+              entry = lib.mkForce "${pkgs.cargo}/bin/cargo clippy --all-targets -- --deny warnings";
+            };
+
+            # TOML formatting
+            taplo = {
+              enable = true;
+              description = "Format TOML files with taplo";
+            };
+
+            # Nix formatting
+            nixpkgs-fmt = {
+              enable = true;
+              description = "Format Nix code with nixpkgs-fmt";
+            };
+          };
+        };
 
         # Common arguments can be set here to avoid repeating them later
         commonArgs = {
@@ -82,6 +120,7 @@
                   lib.makeBinPath [
                     pkgs.nix
                     pkgs.nix-index
+                    pkgs.comma
                     pkgs.nix-diff
                     pkgs.nixpkgs-fmt
                     pkgs.alejandra
@@ -96,6 +135,9 @@
         checks = {
           # Build the crate as part of `nix flake check` for convenience
           onix-mcp = onix-mcp;
+
+          # Pre-commit hooks check
+          pre-commit-check = pre-commit-check;
 
           # Run clippy (and deny all warnings) on the crate source,
           # again, reusing the dependency artifacts from above.
@@ -172,7 +214,11 @@
             pkgs.gemini-cli
             pkgs.codex
             pkgs.nix-index
+            pkgs.comma
           ];
+
+          # Install pre-commit hooks when entering the shell
+          inherit (pre-commit-check) shellHook;
         };
       }
     );

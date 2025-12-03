@@ -1,6 +1,5 @@
 /// Integration tests for Nix MCP tools
 /// These tests interact with real nix commands and only run in development (not in nix build sandbox)
-use tokio;
 
 #[tokio::test]
 async fn test_url_encoding_for_options() {
@@ -21,7 +20,10 @@ async fn test_url_encoding_for_options() {
 // These are ignored in nix build (sandboxed) but run in nix develop
 
 #[tokio::test]
-#[cfg_attr(not(debug_assertions), ignore = "requires nix commands, skip in release/sandbox builds")]
+#[cfg_attr(
+    not(debug_assertions),
+    ignore = "requires nix commands, skip in release/sandbox builds"
+)]
 async fn test_nix_build_dry_run() {
     // Test that nix build --dry-run works with a valid package
     // This is fast and verifies our nix environment is working
@@ -40,7 +42,10 @@ async fn test_nix_build_dry_run() {
 }
 
 #[tokio::test]
-#[cfg_attr(not(debug_assertions), ignore = "requires nix commands, skip in release/sandbox builds")]
+#[cfg_attr(
+    not(debug_assertions),
+    ignore = "requires nix commands, skip in release/sandbox builds"
+)]
 async fn test_nix_eval_simple_expression() {
     // Test that nix eval works for basic expressions
     let output = tokio::process::Command::new("nix")
@@ -56,7 +61,10 @@ async fn test_nix_eval_simple_expression() {
 }
 
 #[tokio::test]
-#[cfg_attr(not(debug_assertions), ignore = "requires nix commands, skip in release/sandbox builds")]
+#[cfg_attr(
+    not(debug_assertions),
+    ignore = "requires nix commands, skip in release/sandbox builds"
+)]
 async fn test_pueue_available_via_nix_shell() {
     // Verify we can run pueue via nix shell (even if daemon isn't running)
     let output = tokio::process::Command::new("nix")
@@ -70,5 +78,33 @@ async fn test_pueue_available_via_nix_shell() {
         out.status.success(),
         "pueue --version should work. stderr: {}",
         String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[tokio::test]
+#[cfg_attr(
+    not(debug_assertions),
+    ignore = "requires comma command, skip in release/sandbox builds"
+)]
+async fn test_comma_available() {
+    // Test that comma (,) command is available in the environment
+    // This is required for the comma MCP tool to work
+    let output = tokio::process::Command::new(",")
+        .arg("--help")
+        .output()
+        .await;
+
+    assert!(output.is_ok(), "comma command should be available");
+    let out = output.unwrap();
+    assert!(
+        out.status.success(),
+        "comma --help should succeed. stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("Runs programs without installing them"),
+        "comma should display its description"
     );
 }

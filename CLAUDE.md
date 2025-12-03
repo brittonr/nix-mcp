@@ -68,6 +68,12 @@ nix develop -c cargo audit
 
 # Check license compliance
 nix develop -c cargo deny check
+
+# Run pre-commit hooks (automatically checks formatting, linting, etc.)
+nix develop -c pre-commit run --all-files
+
+# Pre-commit hooks are also available as an MCP tool
+# Use the pre_commit_run tool through the MCP server to check code quality
 ```
 
 ### Running the MCP Server
@@ -93,6 +99,69 @@ nix flake check
 nix build .#checks.x86_64-linux.quick-start-clippy
 nix build .#checks.x86_64-linux.quick-start-nextest
 ```
+
+### Pre-commit Hooks
+
+The repository uses pre-commit hooks to enforce code quality before commits. These hooks are automatically installed when entering the Nix development shell.
+
+**Configured Hooks:**
+- **rustfmt**: Formats Rust code automatically
+- **clippy**: Lints Rust code and fails if warnings are found
+- **taplo**: Formats TOML files
+- **nixpkgs-fmt**: Formats Nix code
+
+**Usage:**
+```sh
+# Hooks run automatically on git commit
+git commit -m "your message"
+
+# Manually run hooks on all files
+nix develop -c pre-commit run --all-files
+
+# Manually run hooks on staged files only
+nix develop -c pre-commit run
+
+# Skip hooks if absolutely necessary (not recommended)
+git commit --no-verify
+```
+
+**MCP Tool Integration:**
+
+The onix-mcp server provides three tools for pre-commit hook management:
+
+1. **`check_pre_commit_status`** - Check if pre-commit hooks are configured
+   ```json
+   {
+     "name": "check_pre_commit_status",
+     "arguments": {}
+   }
+   ```
+   Returns detailed status of pre-commit setup with recommendations if not configured.
+
+2. **`pre_commit_run`** - Run pre-commit hooks to check code quality
+   ```json
+   {
+     "name": "pre_commit_run",
+     "arguments": {
+       "all_files": true,  // Run on all files (default: staged files only)
+       "hook_ids": "rustfmt,clippy"  // Optional: run specific hooks
+     }
+   }
+   ```
+
+3. **`setup_pre_commit`** - Set up pre-commit hooks for a project
+   ```json
+   {
+     "name": "setup_pre_commit",
+     "arguments": {
+       "install": true  // Install hooks immediately
+     }
+   }
+   ```
+
+**Proactive Suggestion:**
+
+The onix-mcp server is configured to PROACTIVELY suggest setting up pre-commit hooks when working with a git repository that doesn't have them configured. Claude Code will automatically check pre-commit status and offer to set them up, ensuring code quality standards are enforced from the start.
 
 ## Architecture
 
