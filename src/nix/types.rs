@@ -120,3 +120,56 @@ pub struct NixosBuildArgs {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub use_nom: Option<bool>,
 }
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct SearchOptionsArgs {
+    /// Search query for NixOS options
+    pub query: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct NixEvalArgs {
+    /// Nix expression to evaluate
+    pub expression: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct RunInShellArgs {
+    /// Packages to include in the shell (e.g., ["python3", "nodejs"])
+    pub packages: Vec<String>,
+    /// Command to run in the shell
+    pub command: String,
+    /// Use nix develop instead of nix-shell (requires flake.nix)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub use_flake: Option<bool>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct NixLogArgs {
+    /// Nix store path to get logs for (e.g., "/nix/store/xxx-hello-1.0.drv")
+    pub store_path: String,
+    /// Optional grep pattern to filter log output
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grep_pattern: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct NixRunArgs {
+    /// Package to run (e.g., "nixpkgs#hello", "nixpkgs#cowsay")
+    pub package: String,
+    /// Arguments to pass to the program
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub args: Option<Vec<String>>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct NixDevelopArgs {
+    /// Flake reference for development shell (e.g., ".", "github:owner/repo")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub flake_ref: Option<String>,
+    /// Command to run in the development environment
+    pub command: String,
+    /// Additional arguments for the command
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub args: Option<Vec<String>>,
+}
