@@ -290,31 +290,11 @@ pub struct PueueStartArgs {
 }
 
 // Pexpect-cli interactive terminal automation argument types
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct PexpectStartArgs {
-    /// Command to run interactively (e.g., "bash", "python", "ssh user@host")
-    pub command: String,
-    /// Arguments for the command
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub args: Option<Vec<String>>,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct PexpectSendArgs {
-    /// Session ID from pexpect_start
-    pub session_id: String,
-    /// Python pexpect code to execute (e.g., "child.sendline('ls'); child.expect('$'); print(child.before.decode())")
-    pub code: String,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct PexpectCloseArgs {
-    /// Session ID to close
-    pub session_id: String,
-}
-
 // Import pre-commit types from dev module
 use crate::dev::{CheckPreCommitStatusArgs, PreCommitRunArgs, SetupPreCommitArgs};
+
+// Import pexpect types from process module
+use crate::process::{PexpectCloseArgs, PexpectSendArgs, PexpectStartArgs};
 
 // Clan-specific argument types
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -539,6 +519,7 @@ pub struct NixServer {
     audit: Arc<AuditLogger>,
     // Modular tool implementations
     precommit_tools: Arc<crate::dev::PreCommitTools>,
+    pexpect_tools: Arc<crate::process::PexpectTools>,
     // Cache for expensive nix-locate queries (TTL: 5 minutes)
     locate_cache: Arc<TtlCache<String, String>>,
     // Cache for package search results (TTL: 10 minutes)
@@ -564,6 +545,7 @@ impl NixServer {
             prompt_router: Self::prompt_router(),
             audit: audit.clone(),
             precommit_tools: Arc::new(crate::dev::PreCommitTools::new(audit.clone())),
+            pexpect_tools: Arc::new(crate::process::PexpectTools::new(audit.clone())),
             locate_cache: Arc::new(TtlCache::new(Duration::from_secs(300))), // 5 min TTL
             search_cache: Arc::new(TtlCache::new(Duration::from_secs(600))), // 10 min TTL
             package_info_cache: Arc::new(TtlCache::new(Duration::from_secs(1800))), // 30 min TTL
@@ -4791,59 +4773,10 @@ BENEFITS:
     )]
     async fn pexpect_start(
         &self,
-        Parameters(PexpectStartArgs { command, args }): Parameters<PexpectStartArgs>,
+        args: Parameters<PexpectStartArgs>,
     ) -> Result<CallToolResult, McpError> {
-        use crate::common::security::helpers::{audit_tool_execution, with_timeout};
-
-        // Validate command
-        validate_command(&command).map_err(validation_error_to_mcp)?;
-
-        // Wrap tool logic with security
-        audit_tool_execution(
-            &self.audit,
-            "pexpect_start",
-            Some(serde_json::json!({"command": &command, "args": &args})),
-            || async {
-                with_timeout(&self.audit, "pexpect_start", 30, || async {
-                    // Use nix run to ensure pexpect-cli is available
-                    let mut cmd = tokio::process::Command::new("nix");
-                    cmd.arg("run")
-                        .arg("nixpkgs#python3Packages.pexpect-cli")
-                        .arg("--")
-                        .arg("--start")
-                        .arg(&command);
-
-                    if let Some(command_args) = args {
-                        for arg in command_args {
-                            cmd.arg(arg);
-                        }
-                    }
-
-                    let output = cmd.output().await.map_err(|e| {
-                        McpError::internal_error(
-                            format!("Failed to execute pexpect-cli via nix run: {}", e),
-                            None,
-                        )
-                    })?;
-
-                    if !output.status.success() {
-                        let stderr = String::from_utf8_lossy(&output.stderr);
-                        return Err(McpError::internal_error(
-                            format!("pexpect-cli failed: {}", stderr),
-                            None,
-                        ));
-                    }
-
-                    let stdout = String::from_utf8_lossy(&output.stdout);
-                    Ok(CallToolResult::success(vec![Content::text(format!(
-                        "Session started successfully. Session ID: {}",
-                        stdout.trim()
-                    ))]))
-                })
-                .await
-            },
-        )
-        .await
+        // Delegate to modular implementation
+        self.pexpect_tools.pexpect_start(args).await
     }
 
     #[tool(
@@ -4852,68 +4785,10 @@ BENEFITS:
     )]
     async fn pexpect_send(
         &self,
-        Parameters(PexpectSendArgs { session_id, code }): Parameters<PexpectSendArgs>,
+        args: Parameters<PexpectSendArgs>,
     ) -> Result<CallToolResult, McpError> {
-        use crate::common::security::helpers::{audit_tool_execution, with_timeout};
-
-        // Validate session ID format (should be alphanumeric)
-        if session_id.is_empty()
-            || session_id.contains('\0')
-            || !session_id.chars().all(|c| c.is_alphanumeric())
-        {
-            return Err(McpError::invalid_params(
-                "Invalid session_id".to_string(),
-                Some(serde_json::json!({"session_id": session_id})),
-            ));
-        }
-
-        // Wrap tool logic with security
-        audit_tool_execution(
-            &self.audit,
-            "pexpect_send",
-            Some(serde_json::json!({"session_id": &session_id, "code": &code})),
-            || async {
-                with_timeout(&self.audit, "pexpect_send", 60, || async {
-                    // Use nix run via shell to pipe input to pexpect-cli
-                    let mut cmd = tokio::process::Command::new("sh");
-                    cmd.arg("-c");
-                    cmd.arg(format!(
-                        "echo '{}' | nix run nixpkgs#python3Packages.pexpect-cli -- {}",
-                        code, session_id
-                    ));
-
-                    let output = cmd.output().await.map_err(|e| {
-                        McpError::internal_error(
-                            format!("Failed to execute pexpect-cli via nix run: {}", e),
-                            None,
-                        )
-                    })?;
-
-                    let stdout = String::from_utf8_lossy(&output.stdout);
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-
-                    let mut result = String::new();
-                    if !stdout.is_empty() {
-                        result.push_str(&stdout);
-                    }
-                    if !stderr.is_empty() {
-                        if !result.is_empty() {
-                            result.push('\n');
-                        }
-                        result.push_str("STDERR:\n");
-                        result.push_str(&stderr);
-                    }
-
-                    if result.is_empty() {
-                        result = "Command sent successfully (no output)".to_string();
-                    }
-
-                    Ok(CallToolResult::success(vec![Content::text(result)]))
-                })
-                .await
-            },
-        )
-        .await
+        // Delegate to modular implementation
+        self.pexpect_tools.pexpect_send(args).await
     }
 
     #[tool(
@@ -4922,61 +4797,10 @@ BENEFITS:
     )]
     async fn pexpect_close(
         &self,
-        Parameters(PexpectCloseArgs { session_id }): Parameters<PexpectCloseArgs>,
+        args: Parameters<PexpectCloseArgs>,
     ) -> Result<CallToolResult, McpError> {
-        use crate::common::security::helpers::{audit_tool_execution, with_timeout};
-
-        // Validate session ID format
-        if session_id.is_empty()
-            || session_id.contains('\0')
-            || !session_id.chars().all(|c| c.is_alphanumeric())
-        {
-            return Err(McpError::invalid_params(
-                "Invalid session_id".to_string(),
-                Some(serde_json::json!({"session_id": session_id})),
-            ));
-        }
-
-        // Wrap tool logic with security
-        audit_tool_execution(
-            &self.audit,
-            "pexpect_close",
-            Some(serde_json::json!({"session_id": &session_id})),
-            || async {
-                with_timeout(&self.audit, "pexpect_close", 30, || async {
-                    // Use nix run via shell to close pexpect session
-                    let output = tokio::process::Command::new("sh")
-                        .arg("-c")
-                        .arg(format!(
-                            "echo 'child.close()' | nix run nixpkgs#python3Packages.pexpect-cli -- {}",
-                            session_id
-                        ))
-                        .output()
-                        .await
-                        .map_err(|e| {
-                            McpError::internal_error(
-                                format!("Failed to close pexpect session via nix run: {}", e),
-                                None,
-                            )
-                        })?;
-
-                    if !output.status.success() {
-                        let stderr = String::from_utf8_lossy(&output.stderr);
-                        return Err(McpError::internal_error(
-                            format!("Failed to close session: {}", stderr),
-                            None,
-                        ));
-                    }
-
-                    Ok(CallToolResult::success(vec![Content::text(format!(
-                        "Session {} closed successfully",
-                        session_id
-                    ))]))
-                })
-                .await
-            },
-        )
-        .await
+        // Delegate to modular implementation
+        self.pexpect_tools.pexpect_close(args).await
     }
 
     #[tool(
