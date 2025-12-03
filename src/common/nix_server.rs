@@ -228,73 +228,14 @@ pub struct NixFmtArgs {
     pub path: Option<String>,
 }
 
-// Pueue process management argument types
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct PueueAddArgs {
-    /// Command to run
-    pub command: String,
-    /// Arguments for the command
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub args: Option<Vec<String>>,
-    /// Working directory for the command
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub working_directory: Option<String>,
-    /// Label for the task
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub label: Option<String>,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct PueueStatusArgs {
-    /// Show only specific task IDs (comma-separated, e.g., "1,2,3")
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub task_ids: Option<String>,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct PueueLogArgs {
-    /// Task ID to get logs for
-    pub task_id: u32,
-    /// Number of lines to show from the end (like tail -n)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub lines: Option<usize>,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct PueueWaitArgs {
-    /// Task IDs to wait for (comma-separated, e.g., "1,2,3")
-    pub task_ids: String,
-    /// Timeout in seconds (default: 300)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub timeout: Option<u64>,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct PueueRemoveArgs {
-    /// Task IDs to remove (comma-separated, e.g., "1,2,3")
-    pub task_ids: String,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct PueuePauseArgs {
-    /// Task IDs to pause (comma-separated, e.g., "1,2,3"). Leave empty to pause all.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub task_ids: Option<String>,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct PueueStartArgs {
-    /// Task IDs to start/resume (comma-separated, e.g., "1,2,3"). Leave empty to start all.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub task_ids: Option<String>,
-}
-
-// Pexpect-cli interactive terminal automation argument types
 // Import pre-commit types from dev module
 use crate::dev::{CheckPreCommitStatusArgs, PreCommitRunArgs, SetupPreCommitArgs};
 
-// Import pexpect types from process module
-use crate::process::{PexpectCloseArgs, PexpectSendArgs, PexpectStartArgs};
+// Import pexpect and pueue types from process module
+use crate::process::{
+    PexpectCloseArgs, PexpectSendArgs, PexpectStartArgs, PueueAddArgs, PueueCleanArgs,
+    PueueLogArgs, PueuePauseArgs, PueueRemoveArgs, PueueStartArgs, PueueStatusArgs, PueueWaitArgs,
+};
 
 // Clan-specific argument types
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -520,6 +461,7 @@ pub struct NixServer {
     // Modular tool implementations
     precommit_tools: Arc<crate::dev::PreCommitTools>,
     pexpect_tools: Arc<crate::process::PexpectTools>,
+    pueue_tools: Arc<crate::process::PueueTools>,
     // Cache for expensive nix-locate queries (TTL: 5 minutes)
     locate_cache: Arc<TtlCache<String, String>>,
     // Cache for package search results (TTL: 10 minutes)
@@ -546,6 +488,7 @@ impl NixServer {
             audit: audit.clone(),
             precommit_tools: Arc::new(crate::dev::PreCommitTools::new(audit.clone())),
             pexpect_tools: Arc::new(crate::process::PexpectTools::new(audit.clone())),
+            pueue_tools: Arc::new(crate::process::PueueTools::new(audit.clone())),
             locate_cache: Arc::new(TtlCache::new(Duration::from_secs(300))), // 5 min TTL
             search_cache: Arc::new(TtlCache::new(Duration::from_secs(600))), // 10 min TTL
             package_info_cache: Arc::new(TtlCache::new(Duration::from_secs(1800))), // 30 min TTL
@@ -4291,78 +4234,9 @@ BENEFITS:
         description = "Add a command to the pueue task queue for async execution. Returns task ID.",
         annotations(read_only_hint = false)
     )]
-    async fn pueue_add(
-        &self,
-        Parameters(PueueAddArgs {
-            command,
-            args,
-            working_directory,
-            label,
-        }): Parameters<PueueAddArgs>,
-    ) -> Result<CallToolResult, McpError> {
-        use crate::common::security::helpers::{audit_tool_execution, with_timeout};
-
-        // Validate command
-        validate_command(&command).map_err(validation_error_to_mcp)?;
-
-        // Validate working directory if provided
-        if let Some(ref wd) = working_directory {
-            use crate::common::security::validate_path;
-            validate_path(wd).map_err(validation_error_to_mcp)?;
-        }
-
-        // Wrap tool logic with security
-        audit_tool_execution(
-            &self.audit,
-            "pueue_add",
-            Some(serde_json::json!({"command": &command, "args": &args, "working_directory": &working_directory, "label": &label})),
-            || async {
-                with_timeout(&self.audit, "pueue_add", 30, || async {
-                    // Use nix run to ensure pueue is available
-                    let mut cmd = tokio::process::Command::new("nix");
-                    cmd.arg("run").arg("nixpkgs#pueue").arg("--").arg("add");
-
-                    if let Some(wd) = working_directory {
-                        cmd.arg("--working-directory").arg(wd);
-                    }
-
-                    if let Some(lbl) = label {
-                        cmd.arg("--label").arg(lbl);
-                    }
-
-                    cmd.arg("--");
-                    cmd.arg(&command);
-
-                    if let Some(command_args) = args {
-                        for arg in command_args {
-                            cmd.arg(arg);
-                        }
-                    }
-
-                    let output = cmd.output().await.map_err(|e| {
-                        McpError::internal_error(
-                            format!("Failed to execute pueue add via nix run: {}", e),
-                            None,
-                        )
-                    })?;
-
-                    if !output.status.success() {
-                        let stderr = String::from_utf8_lossy(&output.stderr);
-                        return Err(McpError::internal_error(
-                            format!("pueue add failed: {}", stderr),
-                            None,
-                        ));
-                    }
-
-                    let stdout = String::from_utf8_lossy(&output.stdout);
-                    Ok(CallToolResult::success(vec![Content::text(
-                        stdout.to_string(),
-                    )]))
-                })
-                .await
-            },
-        )
-        .await
+    async fn pueue_add(&self, args: Parameters<PueueAddArgs>) -> Result<CallToolResult, McpError> {
+        // Delegate to modular implementation
+        self.pueue_tools.pueue_add(args).await
     }
 
     #[tool(
@@ -4371,104 +4245,19 @@ BENEFITS:
     )]
     async fn pueue_status(
         &self,
-        Parameters(PueueStatusArgs { task_ids }): Parameters<PueueStatusArgs>,
+        args: Parameters<PueueStatusArgs>,
     ) -> Result<CallToolResult, McpError> {
-        use crate::common::security::helpers::{audit_tool_execution, with_timeout};
-
-        // Wrap tool logic with security
-        audit_tool_execution(
-            &self.audit,
-            "pueue_status",
-            Some(serde_json::json!({"task_ids": &task_ids})),
-            || async {
-                with_timeout(&self.audit, "pueue_status", 30, || async {
-                    let mut cmd = tokio::process::Command::new("nix");
-                    cmd.arg("run").arg("nixpkgs#pueue").arg("--").arg("status");
-
-                    if let Some(ids) = task_ids {
-                        for id in ids.split(',') {
-                            cmd.arg(id.trim());
-                        }
-                    }
-
-                    let output = cmd.output().await.map_err(|e| {
-                        McpError::internal_error(
-                            format!("Failed to execute pueue status: {}", e),
-                            None,
-                        )
-                    })?;
-
-                    if !output.status.success() {
-                        let stderr = String::from_utf8_lossy(&output.stderr);
-                        return Err(McpError::internal_error(
-                            format!("pueue status failed: {}", stderr),
-                            None,
-                        ));
-                    }
-
-                    let stdout = String::from_utf8_lossy(&output.stdout);
-                    Ok(CallToolResult::success(vec![Content::text(
-                        stdout.to_string(),
-                    )]))
-                })
-                .await
-            },
-        )
-        .await
+        // Delegate to modular implementation
+        self.pueue_tools.pueue_status(args).await
     }
 
     #[tool(
         description = "Get logs for a specific pueue task",
         annotations(read_only_hint = true)
     )]
-    async fn pueue_log(
-        &self,
-        Parameters(PueueLogArgs { task_id, lines }): Parameters<PueueLogArgs>,
-    ) -> Result<CallToolResult, McpError> {
-        use crate::common::security::helpers::{audit_tool_execution, with_timeout};
-
-        // Wrap tool logic with security
-        audit_tool_execution(
-            &self.audit,
-            "pueue_log",
-            Some(serde_json::json!({"task_id": &task_id, "lines": &lines})),
-            || async {
-                with_timeout(&self.audit, "pueue_log", 30, || async {
-                    let mut cmd = tokio::process::Command::new("nix");
-                    cmd.arg("run")
-                        .arg("nixpkgs#pueue")
-                        .arg("--")
-                        .arg("log")
-                        .arg(task_id.to_string());
-
-                    if let Some(n) = lines {
-                        cmd.arg("--lines").arg(n.to_string());
-                    }
-
-                    let output = cmd.output().await.map_err(|e| {
-                        McpError::internal_error(
-                            format!("Failed to execute pueue log: {}", e),
-                            None,
-                        )
-                    })?;
-
-                    if !output.status.success() {
-                        let stderr = String::from_utf8_lossy(&output.stderr);
-                        return Err(McpError::internal_error(
-                            format!("pueue log failed: {}", stderr),
-                            None,
-                        ));
-                    }
-
-                    let stdout = String::from_utf8_lossy(&output.stdout);
-                    Ok(CallToolResult::success(vec![Content::text(
-                        stdout.to_string(),
-                    )]))
-                })
-                .await
-            },
-        )
-        .await
+    async fn pueue_log(&self, args: Parameters<PueueLogArgs>) -> Result<CallToolResult, McpError> {
+        // Delegate to modular implementation
+        self.pueue_tools.pueue_log(args).await
     }
 
     #[tool(
@@ -4477,71 +4266,10 @@ BENEFITS:
     )]
     async fn pueue_wait(
         &self,
-        Parameters(PueueWaitArgs { task_ids, timeout }): Parameters<PueueWaitArgs>,
+        args: Parameters<PueueWaitArgs>,
     ) -> Result<CallToolResult, McpError> {
-        use crate::common::security::helpers::audit_tool_execution;
-
-        // Validate task IDs format
-        if task_ids.is_empty() || task_ids.contains('\0') {
-            return Err(McpError::invalid_params(
-                "Invalid task_ids".to_string(),
-                Some(serde_json::json!({"task_ids": task_ids})),
-            ));
-        }
-
-        // Wrap tool logic with security
-        audit_tool_execution(
-            &self.audit,
-            "pueue_wait",
-            Some(serde_json::json!({"task_ids": &task_ids, "timeout": &timeout})),
-            || async {
-                // Use custom timeout for wait command
-                let wait_timeout = timeout.unwrap_or(300);
-
-                let timeout_duration = tokio::time::Duration::from_secs(wait_timeout);
-                let result = tokio::time::timeout(timeout_duration, async {
-                    let mut cmd = tokio::process::Command::new("nix");
-                    cmd.arg("run").arg("nixpkgs#pueue").arg("--").arg("wait");
-
-                    for id in task_ids.split(',') {
-                        cmd.arg(id.trim());
-                    }
-
-                    let output = cmd.output().await.map_err(|e| {
-                        McpError::internal_error(
-                            format!("Failed to execute pueue wait: {}", e),
-                            None,
-                        )
-                    })?;
-
-                    if !output.status.success() {
-                        let stderr = String::from_utf8_lossy(&output.stderr);
-                        return Err(McpError::internal_error(
-                            format!("pueue wait failed: {}", stderr),
-                            None,
-                        ));
-                    }
-
-                    let stdout = String::from_utf8_lossy(&output.stdout);
-                    let mut result_text = stdout.to_string();
-                    if result_text.is_empty() {
-                        result_text = format!("Task(s) {} completed successfully", task_ids);
-                    }
-
-                    Ok(CallToolResult::success(vec![Content::text(result_text)]))
-                })
-                .await;
-
-                match result {
-                    Ok(r) => r,
-                    Err(_) => Err(McpError::internal_error(
-                        format!("pueue wait timed out after {} seconds", wait_timeout),
-                        None,
-                    )),
-                }
-            },
-        )
-        .await
+        // Delegate to modular implementation
+        self.pueue_tools.pueue_wait(args).await
     }
 
     #[tool(
@@ -4550,59 +4278,10 @@ BENEFITS:
     )]
     async fn pueue_remove(
         &self,
-        Parameters(PueueRemoveArgs { task_ids }): Parameters<PueueRemoveArgs>,
+        args: Parameters<PueueRemoveArgs>,
     ) -> Result<CallToolResult, McpError> {
-        use crate::common::security::helpers::{audit_tool_execution, with_timeout};
-
-        // Validate task IDs format
-        if task_ids.is_empty() || task_ids.contains('\0') {
-            return Err(McpError::invalid_params(
-                "Invalid task_ids".to_string(),
-                Some(serde_json::json!({"task_ids": task_ids})),
-            ));
-        }
-
-        // Wrap tool logic with security
-        audit_tool_execution(
-            &self.audit,
-            "pueue_remove",
-            Some(serde_json::json!({"task_ids": &task_ids})),
-            || async {
-                with_timeout(&self.audit, "pueue_remove", 30, || async {
-                    let mut cmd = tokio::process::Command::new("nix");
-                    cmd.arg("run").arg("nixpkgs#pueue").arg("--").arg("remove");
-
-                    for id in task_ids.split(',') {
-                        cmd.arg(id.trim());
-                    }
-
-                    let output = cmd.output().await.map_err(|e| {
-                        McpError::internal_error(
-                            format!("Failed to execute pueue remove: {}", e),
-                            None,
-                        )
-                    })?;
-
-                    if !output.status.success() {
-                        let stderr = String::from_utf8_lossy(&output.stderr);
-                        return Err(McpError::internal_error(
-                            format!("pueue remove failed: {}", stderr),
-                            None,
-                        ));
-                    }
-
-                    let stdout = String::from_utf8_lossy(&output.stdout);
-                    let mut result_text = stdout.to_string();
-                    if result_text.is_empty() {
-                        result_text = format!("Task(s) {} removed successfully", task_ids);
-                    }
-
-                    Ok(CallToolResult::success(vec![Content::text(result_text)]))
-                })
-                .await
-            },
-        )
-        .await
+        // Delegate to modular implementation
+        self.pueue_tools.pueue_remove(args).await
     }
 
     #[tool(
@@ -4611,46 +4290,10 @@ BENEFITS:
     )]
     async fn pueue_clean(
         &self,
-        Parameters(_): Parameters<serde_json::Map<String, serde_json::Value>>,
+        args: Parameters<PueueCleanArgs>,
     ) -> Result<CallToolResult, McpError> {
-        use crate::common::security::helpers::{audit_tool_execution, with_timeout};
-
-        // Wrap tool logic with security
-        audit_tool_execution(&self.audit, "pueue_clean", None, || async {
-            with_timeout(&self.audit, "pueue_clean", 30, || async {
-                let output = tokio::process::Command::new("nix")
-                    .arg("run")
-                    .arg("nixpkgs#pueue")
-                    .arg("--")
-                    .arg("clean")
-                    .output()
-                    .await
-                    .map_err(|e| {
-                        McpError::internal_error(
-                            format!("Failed to execute pueue clean: {}", e),
-                            None,
-                        )
-                    })?;
-
-                if !output.status.success() {
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    return Err(McpError::internal_error(
-                        format!("pueue clean failed: {}", stderr),
-                        None,
-                    ));
-                }
-
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                let mut result_text = stdout.to_string();
-                if result_text.is_empty() {
-                    result_text = "Finished tasks cleaned successfully".to_string();
-                }
-
-                Ok(CallToolResult::success(vec![Content::text(result_text)]))
-            })
-            .await
-        })
-        .await
+        // Delegate to modular implementation
+        self.pueue_tools.pueue_clean(args).await
     }
 
     #[tool(
@@ -4659,55 +4302,10 @@ BENEFITS:
     )]
     async fn pueue_pause(
         &self,
-        Parameters(PueuePauseArgs { task_ids }): Parameters<PueuePauseArgs>,
+        args: Parameters<PueuePauseArgs>,
     ) -> Result<CallToolResult, McpError> {
-        use crate::common::security::helpers::{audit_tool_execution, with_timeout};
-
-        // Wrap tool logic with security
-        audit_tool_execution(
-            &self.audit,
-            "pueue_pause",
-            Some(serde_json::json!({"task_ids": &task_ids})),
-            || async {
-                with_timeout(&self.audit, "pueue_pause", 30, || async {
-                    let mut cmd = tokio::process::Command::new("nix");
-                    cmd.arg("run").arg("nixpkgs#pueue").arg("--").arg("pause");
-
-                    if let Some(ids) = task_ids {
-                        for id in ids.split(',') {
-                            cmd.arg(id.trim());
-                        }
-                    } else {
-                        cmd.arg("--all");
-                    }
-
-                    let output = cmd.output().await.map_err(|e| {
-                        McpError::internal_error(
-                            format!("Failed to execute pueue pause: {}", e),
-                            None,
-                        )
-                    })?;
-
-                    if !output.status.success() {
-                        let stderr = String::from_utf8_lossy(&output.stderr);
-                        return Err(McpError::internal_error(
-                            format!("pueue pause failed: {}", stderr),
-                            None,
-                        ));
-                    }
-
-                    let stdout = String::from_utf8_lossy(&output.stdout);
-                    let mut result_text = stdout.to_string();
-                    if result_text.is_empty() {
-                        result_text = "Task(s) paused successfully".to_string();
-                    }
-
-                    Ok(CallToolResult::success(vec![Content::text(result_text)]))
-                })
-                .await
-            },
-        )
-        .await
+        // Delegate to modular implementation
+        self.pueue_tools.pueue_pause(args).await
     }
 
     #[tool(
@@ -4716,55 +4314,10 @@ BENEFITS:
     )]
     async fn pueue_start(
         &self,
-        Parameters(PueueStartArgs { task_ids }): Parameters<PueueStartArgs>,
+        args: Parameters<PueueStartArgs>,
     ) -> Result<CallToolResult, McpError> {
-        use crate::common::security::helpers::{audit_tool_execution, with_timeout};
-
-        // Wrap tool logic with security
-        audit_tool_execution(
-            &self.audit,
-            "pueue_start",
-            Some(serde_json::json!({"task_ids": &task_ids})),
-            || async {
-                with_timeout(&self.audit, "pueue_start", 30, || async {
-                    let mut cmd = tokio::process::Command::new("nix");
-                    cmd.arg("run").arg("nixpkgs#pueue").arg("--").arg("start");
-
-                    if let Some(ids) = task_ids {
-                        for id in ids.split(',') {
-                            cmd.arg(id.trim());
-                        }
-                    } else {
-                        cmd.arg("--all");
-                    }
-
-                    let output = cmd.output().await.map_err(|e| {
-                        McpError::internal_error(
-                            format!("Failed to execute pueue start: {}", e),
-                            None,
-                        )
-                    })?;
-
-                    if !output.status.success() {
-                        let stderr = String::from_utf8_lossy(&output.stderr);
-                        return Err(McpError::internal_error(
-                            format!("pueue start failed: {}", stderr),
-                            None,
-                        ));
-                    }
-
-                    let stdout = String::from_utf8_lossy(&output.stdout);
-                    let mut result_text = stdout.to_string();
-                    if result_text.is_empty() {
-                        result_text = "Task(s) started successfully".to_string();
-                    }
-
-                    Ok(CallToolResult::success(vec![Content::text(result_text)]))
-                })
-                .await
-            },
-        )
-        .await
+        // Delegate to modular implementation
+        self.pueue_tools.pueue_start(args).await
     }
 
     #[tool(
