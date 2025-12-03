@@ -237,6 +237,11 @@ use crate::process::{
     PueueLogArgs, PueuePauseArgs, PueueRemoveArgs, PueueStartArgs, PueueStatusArgs, PueueWaitArgs,
 };
 
+// Import prompt types from prompts module
+use crate::prompts::{
+    MigrateToFlakesArgs, OptimizeClosureArgs, SetupDevEnvironmentArgs, TroubleshootBuildArgs,
+};
+
 // Clan-specific argument types
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct ClanMachineCreateArgs {
@@ -410,49 +415,6 @@ pub struct ClanAnalyzeRosterArgs {
     pub flake: Option<String>,
 }
 
-// Prompt argument types
-#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
-pub struct SetupDevEnvironmentArgs {
-    /// Project type (e.g., "rust", "python", "nodejs", "go", "c", "generic")
-    pub project_type: String,
-    /// Additional tools or dependencies needed
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub dependencies: Option<Vec<String>>,
-    /// Whether to use flakes (default: true)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub use_flakes: Option<bool>,
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
-pub struct TroubleshootBuildArgs {
-    /// The package or flake reference that's failing to build
-    pub package: String,
-    /// Error message or build log excerpt
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error_message: Option<String>,
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
-pub struct MigrateToFlakesArgs {
-    /// Current setup description (e.g., "using nix-shell", "using configuration.nix")
-    pub current_setup: String,
-    /// Project type if applicable
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub project_type: Option<String>,
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
-pub struct OptimizeClosureArgs {
-    /// Package to optimize
-    pub package: String,
-    /// Current closure size if known (in bytes or human-readable)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub current_size: Option<String>,
-    /// Target size or reduction goal
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub target: Option<String>,
-}
-
 #[derive(Clone)]
 pub struct NixServer {
     tool_router: ToolRouter<NixServer>,
@@ -462,6 +424,8 @@ pub struct NixServer {
     precommit_tools: Arc<crate::dev::PreCommitTools>,
     pexpect_tools: Arc<crate::process::PexpectTools>,
     pueue_tools: Arc<crate::process::PueueTools>,
+    // Modular prompt implementations
+    nix_prompts: Arc<crate::prompts::NixPrompts>,
     // Cache for expensive nix-locate queries (TTL: 5 minutes)
     locate_cache: Arc<TtlCache<String, String>>,
     // Cache for package search results (TTL: 10 minutes)
@@ -489,6 +453,7 @@ impl NixServer {
             precommit_tools: Arc::new(crate::dev::PreCommitTools::new(audit.clone())),
             pexpect_tools: Arc::new(crate::process::PexpectTools::new(audit.clone())),
             pueue_tools: Arc::new(crate::process::PueueTools::new(audit.clone())),
+            nix_prompts: Arc::new(crate::prompts::NixPrompts::new()),
             locate_cache: Arc::new(TtlCache::new(Duration::from_secs(300))), // 5 min TTL
             search_cache: Arc::new(TtlCache::new(Duration::from_secs(600))), // 10 min TTL
             package_info_cache: Arc::new(TtlCache::new(Duration::from_secs(1800))), // 30 min TTL
@@ -4399,170 +4364,50 @@ impl NixServer {
     #[prompt(name = "generate_flake")]
     async fn generate_flake(
         &self,
-        Parameters(args): Parameters<serde_json::Map<String, serde_json::Value>>,
-        _ctx: RequestContext<RoleServer>,
+        args: Parameters<serde_json::Map<String, serde_json::Value>>,
+        ctx: RequestContext<RoleServer>,
     ) -> Result<Vec<PromptMessage>, McpError> {
-        let project_type = args
-            .get("project_type")
-            .and_then(|v| v.as_str())
-            .unwrap_or("generic");
-
-        let prompt = format!(
-            "Generate a Nix flake.nix file for a {} project. Include appropriate buildInputs, development shell, and package definition.",
-            project_type
-        );
-
-        Ok(vec![PromptMessage {
-            role: PromptMessageRole::User,
-            content: PromptMessageContent::text(prompt),
-        }])
+        self.nix_prompts.generate_flake(args, ctx).await
     }
 
     /// Guide for setting up a Nix development environment for a specific project type
     #[prompt(name = "setup_dev_environment")]
     async fn setup_dev_environment(
         &self,
-        Parameters(args): Parameters<SetupDevEnvironmentArgs>,
-        _ctx: RequestContext<RoleServer>,
+        args: Parameters<SetupDevEnvironmentArgs>,
+        ctx: RequestContext<RoleServer>,
     ) -> Result<GetPromptResult, McpError> {
-        let use_flakes = args.use_flakes.unwrap_or(true);
-        let deps = args
-            .dependencies
-            .as_ref()
-            .map(|d| d.join(", "))
-            .unwrap_or_else(|| "none specified".to_string());
-
-        let messages = vec![PromptMessage::new_text(
-            PromptMessageRole::User,
-            format!(
-                "I need to set up a Nix development environment for a {} project.\n\
-                    Additional dependencies: {}\n\
-                    Use flakes: {}\n\n\
-                    Please provide:\n\
-                    1. A complete flake.nix (if using flakes) or shell.nix file\n\
-                    2. Explanation of the key components\n\
-                    3. Commands to enter and use the development environment\n\
-                    4. Best practices for this project type with Nix",
-                args.project_type, deps, use_flakes
-            ),
-        )];
-
-        Ok(GetPromptResult {
-            description: Some(format!(
-                "Setup {} development environment",
-                args.project_type
-            )),
-            messages,
-        })
+        self.nix_prompts.setup_dev_environment(args, ctx).await
     }
 
     /// Help troubleshoot Nix build failures with diagnostic guidance
     #[prompt(name = "troubleshoot_build")]
     async fn troubleshoot_build(
         &self,
-        Parameters(args): Parameters<TroubleshootBuildArgs>,
-        _ctx: RequestContext<RoleServer>,
+        args: Parameters<TroubleshootBuildArgs>,
+        ctx: RequestContext<RoleServer>,
     ) -> Result<GetPromptResult, McpError> {
-        let error_context = args
-            .error_message
-            .as_ref()
-            .map(|e| format!("\n\nError message:\n{}", e))
-            .unwrap_or_default();
-
-        let messages = vec![
-            PromptMessage::new_text(
-                PromptMessageRole::User,
-                format!(
-                    "I'm having trouble building: {}{}\n\n\
-                    Please help me:\n\
-                    1. Identify the root cause of the build failure\n\
-                    2. Suggest specific debugging commands to run (like nix log, nix why-depends, etc.)\n\
-                    3. Provide potential solutions or workarounds\n\
-                    4. Explain common patterns that might cause this issue\n\
-                    5. Recommend preventive measures for the future",
-                    args.package, error_context
-                ),
-            ),
-        ];
-
-        Ok(GetPromptResult {
-            description: Some(format!("Troubleshoot build failure for {}", args.package)),
-            messages,
-        })
+        self.nix_prompts.troubleshoot_build(args, ctx).await
     }
 
     /// Guide for migrating existing projects to Nix flakes
     #[prompt(name = "migrate_to_flakes")]
     async fn migrate_to_flakes(
         &self,
-        Parameters(args): Parameters<MigrateToFlakesArgs>,
-        _ctx: RequestContext<RoleServer>,
+        args: Parameters<MigrateToFlakesArgs>,
+        ctx: RequestContext<RoleServer>,
     ) -> Result<GetPromptResult, McpError> {
-        let project_context = args
-            .project_type
-            .as_ref()
-            .map(|p| format!(" for a {} project", p))
-            .unwrap_or_default();
-
-        let messages = vec![PromptMessage::new_text(
-            PromptMessageRole::User,
-            format!(
-                "I want to migrate to Nix flakes{}.\n\
-                    Current setup: {}\n\n\
-                    Please provide:\n\
-                    1. Step-by-step migration plan\n\
-                    2. Example flake.nix based on my current setup\n\
-                    3. How to handle inputs and lock files\n\
-                    4. Common pitfalls to avoid\n\
-                    5. Benefits I'll gain from using flakes\n\
-                    6. Backward compatibility considerations",
-                project_context, args.current_setup
-            ),
-        )];
-
-        Ok(GetPromptResult {
-            description: Some("Migrate to Nix flakes".to_string()),
-            messages,
-        })
+        self.nix_prompts.migrate_to_flakes(args, ctx).await
     }
 
     /// Help optimize package closure size with actionable recommendations
     #[prompt(name = "optimize_closure")]
     async fn optimize_closure(
         &self,
-        Parameters(args): Parameters<OptimizeClosureArgs>,
-        _ctx: RequestContext<RoleServer>,
+        args: Parameters<OptimizeClosureArgs>,
+        ctx: RequestContext<RoleServer>,
     ) -> Result<GetPromptResult, McpError> {
-        let size_context = args
-            .current_size
-            .as_ref()
-            .map(|s| format!("\nCurrent closure size: {}", s))
-            .unwrap_or_default();
-        let target_context = args
-            .target
-            .as_ref()
-            .map(|t| format!("\nTarget: {}", t))
-            .unwrap_or_default();
-
-        let messages = vec![PromptMessage::new_text(
-            PromptMessageRole::User,
-            format!(
-                "I need to optimize the closure size for: {}{}{}\n\n\
-                    Please help me:\n\
-                    1. Analyze dependency tree to identify large dependencies\n\
-                    2. Suggest specific packages or features to remove or replace\n\
-                    3. Provide Nix expressions to create minimal variants\n\
-                    4. Recommend build flags or overrides to reduce size\n\
-                    5. Explain trade-offs between size and functionality\n\
-                    6. Show how to measure and verify improvements",
-                args.package, size_context, target_context
-            ),
-        )];
-
-        Ok(GetPromptResult {
-            description: Some(format!("Optimize closure for {}", args.package)),
-            messages,
-        })
+        self.nix_prompts.optimize_closure(args, ctx).await
     }
 }
 

@@ -6,6 +6,7 @@ use tracing_subscriber::{self, EnvFilter};
 mod common;
 mod dev;
 mod process;
+mod prompts;
 
 /// Nix MCP Server - provides tools for Nix package management and development
 /// Run with: nix develop -c cargo run -p mcp-basic-server --features transport-io
