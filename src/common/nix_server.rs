@@ -35,54 +35,15 @@ use crate::process::{
 
 // Import clan types from clan module
 use crate::clan::{
-    ClanMachineBuildArgs, ClanMachineCreateArgs, ClanMachineDeleteArgs, ClanMachineInstallArgs,
-    ClanMachineListArgs, ClanMachineUpdateArgs,
+    ClanBackupCreateArgs, ClanBackupListArgs, ClanBackupRestoreArgs, ClanMachineBuildArgs,
+    ClanMachineCreateArgs, ClanMachineDeleteArgs, ClanMachineInstallArgs, ClanMachineListArgs,
+    ClanMachineUpdateArgs,
 };
 
 // Import prompt types from prompts module
 use crate::prompts::{
     MigrateToFlakesArgs, OptimizeClosureArgs, SetupDevEnvironmentArgs, TroubleshootBuildArgs,
 };
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct ClanBackupCreateArgs {
-    /// Machine name to backup
-    pub machine: String,
-    /// Optional backup provider
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub provider: Option<String>,
-    /// Optional flake directory path
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub flake: Option<String>,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct ClanBackupListArgs {
-    /// Machine name to list backups for
-    pub machine: String,
-    /// Optional backup provider to filter by
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub provider: Option<String>,
-    /// Optional flake directory path
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub flake: Option<String>,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct ClanBackupRestoreArgs {
-    /// Machine name to restore backup to
-    pub machine: String,
-    /// Backup provider
-    pub provider: String,
-    /// Backup name/identifier
-    pub name: String,
-    /// Optional service to restore (restore all if not specified)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub service: Option<String>,
-    /// Optional flake directory path
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub flake: Option<String>,
-}
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct ClanFlakeCreateArgs {
@@ -156,6 +117,7 @@ pub struct NixServer {
     flake_tools: Arc<crate::nix::FlakeTools>,
     quality_tools: Arc<crate::nix::QualityTools>,
     machine_tools: Arc<crate::clan::MachineTools>,
+    backup_tools: Arc<crate::clan::BackupTools>,
     // Cache for expensive nix-locate queries (TTL: 5 minutes)
     locate_cache: Arc<TtlCache<String, String>>,
     // Cache for package search results (TTL: 10 minutes)
@@ -213,6 +175,7 @@ impl NixServer {
             flake_tools: Arc::new(crate::nix::FlakeTools::new(audit.clone())),
             quality_tools: Arc::new(crate::nix::QualityTools::new(audit.clone())),
             machine_tools: Arc::new(crate::clan::MachineTools::new(audit.clone())),
+            backup_tools: Arc::new(crate::clan::BackupTools::new(audit.clone())),
             locate_cache,
             search_cache,
             package_info_cache,
@@ -511,68 +474,9 @@ impl NixServer {
     #[tool(description = "Create a backup for a Clan machine")]
     async fn clan_backup_create(
         &self,
-        Parameters(ClanBackupCreateArgs {
-            machine,
-            provider,
-            flake,
-        }): Parameters<ClanBackupCreateArgs>,
+        args: Parameters<ClanBackupCreateArgs>,
     ) -> Result<CallToolResult, McpError> {
-        use crate::common::security::helpers::{audit_tool_execution, with_timeout};
-        use crate::common::security::validate_machine_name;
-
-        // Validate machine name
-        validate_machine_name(&machine).map_err(validation_error_to_mcp)?;
-
-        // Validate flake ref if provided
-        let flake_str = flake.unwrap_or_else(|| ".".to_string());
-        validate_flake_ref(&flake_str).map_err(validation_error_to_mcp)?;
-
-        // Execute with security features (audit logging + 120s timeout)
-        audit_tool_execution(
-            &self.audit,
-            "clan_backup_create",
-            Some(serde_json::json!({"machine": &machine, "flake": &flake_str})),
-            || async {
-                with_timeout(&self.audit, "clan_backup_create", 120, || async {
-                    let mut args = vec!["backups", "create", &machine];
-
-                    args.push("--flake");
-                    args.push(&flake_str);
-
-                    let provider_str;
-                    if let Some(ref p) = provider {
-                        provider_str = p.clone();
-                        args.push("--provider");
-                        args.push(&provider_str);
-                    }
-
-                    let output = tokio::process::Command::new("clan")
-                        .args(&args)
-                        .output()
-                        .await
-                        .map_err(|e| {
-                            McpError::internal_error(format!("Failed to execute clan: {}", e), None)
-                        })?;
-
-                    let stdout = String::from_utf8_lossy(&output.stdout);
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-
-                    if !output.status.success() {
-                        return Ok(CallToolResult::success(vec![Content::text(format!(
-                            "Backup creation failed:\n\n{}{}",
-                            stdout, stderr
-                        ))]));
-                    }
-
-                    Ok(CallToolResult::success(vec![Content::text(format!(
-                        "Backup created for machine '{}'.\n\n{}{}",
-                        machine, stdout, stderr
-                    ))]))
-                })
-                .await
-            },
-        )
-        .await
+        self.backup_tools.clan_backup_create(args).await
     }
 
     #[tool(
@@ -581,71 +485,9 @@ impl NixServer {
     )]
     async fn clan_backup_list(
         &self,
-        Parameters(ClanBackupListArgs {
-            machine,
-            provider,
-            flake,
-        }): Parameters<ClanBackupListArgs>,
+        args: Parameters<ClanBackupListArgs>,
     ) -> Result<CallToolResult, McpError> {
-        use crate::common::security::helpers::{audit_tool_execution, with_timeout};
-        use crate::common::security::validate_machine_name;
-
-        // Validate machine name
-        validate_machine_name(&machine).map_err(validation_error_to_mcp)?;
-
-        // Validate flake ref if provided
-        let flake_str = flake.unwrap_or_else(|| ".".to_string());
-        validate_flake_ref(&flake_str).map_err(validation_error_to_mcp)?;
-
-        // Execute with security features (audit logging + 30s timeout)
-        audit_tool_execution(
-            &self.audit,
-            "clan_backup_list",
-            Some(serde_json::json!({"machine": &machine, "flake": &flake_str})),
-            || async {
-                with_timeout(&self.audit, "clan_backup_list", 30, || async {
-                    let mut args = vec!["backups", "list", &machine];
-
-                    args.push("--flake");
-                    args.push(&flake_str);
-
-                    let provider_str;
-                    if let Some(ref p) = provider {
-                        provider_str = p.clone();
-                        args.push("--provider");
-                        args.push(&provider_str);
-                    }
-
-                    let output = tokio::process::Command::new("clan")
-                        .args(&args)
-                        .output()
-                        .await
-                        .map_err(|e| {
-                            McpError::internal_error(format!("Failed to execute clan: {}", e), None)
-                        })?;
-
-                    let stdout = String::from_utf8_lossy(&output.stdout);
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-
-                    if !output.status.success() {
-                        return Ok(CallToolResult::success(vec![Content::text(format!(
-                            "Failed to list backups:\n\n{}{}",
-                            stdout, stderr
-                        ))]));
-                    }
-
-                    let result = if stdout.trim().is_empty() {
-                        format!("No backups found for machine '{}'.", machine)
-                    } else {
-                        format!("Backups for machine '{}':\n\n{}", machine, stdout)
-                    };
-
-                    Ok(CallToolResult::success(vec![Content::text(result)]))
-                })
-                .await
-            },
-        )
-        .await
+        self.backup_tools.clan_backup_list(args).await
     }
 
     #[tool(
@@ -654,89 +496,9 @@ impl NixServer {
     )]
     async fn clan_backup_restore(
         &self,
-        Parameters(ClanBackupRestoreArgs {
-            machine,
-            provider,
-            name,
-            service,
-            flake,
-        }): Parameters<ClanBackupRestoreArgs>,
+        args: Parameters<ClanBackupRestoreArgs>,
     ) -> Result<CallToolResult, McpError> {
-        use crate::common::security::helpers::{audit_tool_execution, with_timeout};
-        use crate::common::security::validate_machine_name;
-
-        // Validate machine name
-        validate_machine_name(&machine).map_err(validation_error_to_mcp)?;
-
-        // Validate flake ref if provided
-        let flake_str = flake.unwrap_or_else(|| ".".to_string());
-        validate_flake_ref(&flake_str).map_err(validation_error_to_mcp)?;
-
-        // Validate backup name (basic alphanumeric check)
-        if name.is_empty()
-            || !name
-                .chars()
-                .all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == '.')
-        {
-            return Err(McpError::invalid_params(
-                "Invalid backup name: must be non-empty alphanumeric with dashes, underscores, or dots",
-                None,
-            ));
-        }
-
-        // Log dangerous operation
-        self.audit.log_dangerous_operation(
-            "clan_backup_restore",
-            true,
-            &format!("Restoring backup '{}' for machine '{}'", name, machine),
-        );
-
-        // Execute with security features (audit logging + 120s timeout)
-        audit_tool_execution(
-            &self.audit,
-            "clan_backup_restore",
-            Some(serde_json::json!({"machine": &machine, "backup": &name, "flake": &flake_str})),
-            || async {
-                with_timeout(&self.audit, "clan_backup_restore", 120, || async {
-                    let mut args = vec!["backups", "restore", &machine, &provider, &name];
-
-                    args.push("--flake");
-                    args.push(&flake_str);
-
-                    let service_str;
-                    if let Some(ref s) = service {
-                        service_str = s.clone();
-                        args.push("--service");
-                        args.push(&service_str);
-                    }
-
-                    let output = tokio::process::Command::new("clan")
-                        .args(&args)
-                        .output()
-                        .await
-                        .map_err(|e| {
-                            McpError::internal_error(format!("Failed to execute clan: {}", e), None)
-                        })?;
-
-                    let stdout = String::from_utf8_lossy(&output.stdout);
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-
-                    if !output.status.success() {
-                        return Ok(CallToolResult::success(vec![Content::text(format!(
-                            "Backup restore failed:\n\n{}{}",
-                            stdout, stderr
-                        ))]));
-                    }
-
-                    Ok(CallToolResult::success(vec![Content::text(format!(
-                        "Backup '{}' restored for machine '{}'.\n\n{}{}",
-                        name, machine, stdout, stderr
-                    ))]))
-                })
-                .await
-            },
-        )
-        .await
+        self.backup_tools.clan_backup_restore(args).await
     }
 
     #[tool(description = "Create a new Clan flake from a template")]

@@ -67,3 +67,43 @@ pub struct ClanMachineBuildArgs {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub use_nom: Option<bool>,
 }
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ClanBackupCreateArgs {
+    /// Machine name to backup
+    pub machine: String,
+    /// Optional backup provider
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// Optional flake directory path
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub flake: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ClanBackupListArgs {
+    /// Machine name to list backups for
+    pub machine: String,
+    /// Optional backup provider to filter by
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// Optional flake directory path
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub flake: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ClanBackupRestoreArgs {
+    /// Machine name to restore backup to
+    pub machine: String,
+    /// Backup provider
+    pub provider: String,
+    /// Backup name/identifier
+    pub name: String,
+    /// Optional service to restore (restore all if not specified)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service: Option<String>,
+    /// Optional flake directory path
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub flake: Option<String>,
+}
