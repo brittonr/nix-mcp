@@ -173,3 +173,25 @@ pub struct NixDevelopArgs {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub args: Option<Vec<String>>,
 }
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct FlakeMetadataArgs {
+    /// Flake reference (e.g., ".", "github:owner/repo", "nixpkgs")
+    pub flake_ref: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct FlakeShowArgs {
+    /// Flake reference to inspect (e.g., ".", "github:owner/repo")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub flake_ref: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct PrefetchUrlArgs {
+    /// URL to prefetch
+    pub url: String,
+    /// Expected hash format: "sha256" or "sri" (default: "sri")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hash_format: Option<String>,
+}
