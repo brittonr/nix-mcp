@@ -157,39 +157,6 @@ nix build
 - `code` (string): Nix code to lint
 - `linter` (string, optional): "statix", "deadnix", or "both" (default: "both")
 
-**cargo_build** - Build Rust project with cargo
-- `release` (boolean, optional): Build in release mode
-
-**cargo_test** - Run Rust tests
-- `filter` (string, optional): Test filter pattern
-
-**cargo_nextest** - Run tests with nextest
-- `filter` (string, optional): Test filter pattern
-
-**cargo_clippy** - Run clippy linter
-
-**cargo_audit** - Audit Rust dependencies for vulnerabilities
-
-**cargo_deny** - Check dependency licenses and sources
-
-**taplo** - Format TOML files
-- `file` (string): Path to TOML file
-
-**shellcheck** - Check shell scripts
-- `file` (string): Path to shell script
-
-**ruff_check** - Check Python code with ruff
-- `path` (string): Path to Python file or directory
-
-**ruff_format** - Format Python code
-- `path` (string): Path to Python file or directory
-
-**mypy** - Type check Python code
-- `path` (string): Path to Python file or directory
-
-**make_build** - Run make build
-- `target` (string, optional): Make target
-
 ### Flakes
 
 **flake_metadata** - Show flake metadata
