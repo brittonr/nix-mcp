@@ -1,0 +1,57 @@
+# cargo-deny configuration
+# See https://embarkstudios.github.io/cargo-deny/ for documentation
+
+[licenses]
+# Deny packages without a license
+unlicensed = "deny"
+
+# List of allowed licenses
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "BSD-3-Clause",
+  "BSD-2-Clause",
+  "ISC",
+  "CC0-1.0",
+  "MPL-2.0",
+  "Unicode-DFS-2016",
+]
+
+# Confidence threshold for license detection (0.0 - 1.0)
+confidence-threshold = 0.8
+
+[bans]
+# Warn if multiple versions of the same crate are used
+multiple-versions = "warn"
+
+# Skip certain crates from multiple version warnings
+skip = []
+
+# Skip trees from multiple version warnings
+skip-tree = []
+
+[advisories]
+# Deny crates with security vulnerabilities
+vulnerability = "deny"
+
+# Warn about unmaintained crates
+unmaintained = "warn"
+
+# Warn about yanked crates
+yanked = "warn"
+
+# Ignore specific advisories (use RUSTSEC-YEAR-NUMBER format)
+ignore = []
+
+[sources]
+# Lint level for what to happen when a crate from a crate registry that is not in the allow list is encountered
+unknown-registry = "warn"
+
+# Lint level for what to happen when a crate from a git repository that is not in the allow list is encountered
+unknown-git = "warn"
+
+# Allow crates from crates.io
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+
+# Allow git sources (for rmcp and other dependencies)
+allow-git = []

@@ -35,6 +35,116 @@ nix develop -c cargo build
 nix develop -c cargo nextest run
 ```
 
+## Getting Started: Your First Workflow
+
+Let's get you productive with onix-mcp in under 5 minutes! This guide shows common workflows that demonstrate the server's capabilities.
+
+### Step 1: Search for a Package (30 seconds)
+
+Ask your MCP client (e.g., Claude):
+
+> "Search for ripgrep in nixpkgs"
+
+The server will use the `search_packages` tool and show:
+
+```
+Found packages matching 'ripgrep':
+
+Package: nixpkgs.ripgrep
+Version: 14.1.0
+Description: A search tool that combines the usability of ag with the raw speed of grep
+```
+
+### Step 2: Get Package Details (30 seconds)
+
+Ask:
+
+> "Explain the ripgrep package"
+
+The server will use the `explain_package` tool and show:
+
+```
+Package: ripgrep
+Version: 14.1.0
+License: MIT
+Homepage: https://github.com/BurntSushi/ripgrep
+Platforms: x86_64-linux, aarch64-linux, aarch64-darwin, x86_64-darwin
+Description: A search tool that combines the usability of ag with the raw speed of grep
+```
+
+### Step 3: Run Without Installing (1 minute)
+
+Ask:
+
+> "Run ripgrep with --version using comma"
+
+The server will use the `comma` tool:
+
+```
+ripgrep 14.1.0
+```
+
+What just happened? Nix downloaded ripgrep temporarily, ran it, and cleaned up - no permanent installation needed!
+
+### Common Workflows
+
+Here are the most useful workflows with onix-mcp:
+
+| Goal | Tools Used | Example Query |
+|------|------------|---------------|
+| Find a package | `search_packages` → `explain_package` | "Find and explain the htop package" |
+| Try before installing | `comma` or `nix_run` | "Run cowsay with comma" |
+| Debug a build failure | `nix_build` (dry-run) → `get_build_log` | "Show what's needed to build firefox, then show build logs" |
+| Understand dependencies | `why_depends` → `get_closure_size` | "Why does firefox depend on libx11? What's the total closure size?" |
+| Set up dev environment | `run_in_shell` | "Run my Python script with numpy and pandas available" |
+| Locate a file's package | `nix_locate` → `get_package_info` | "Which package provides bin/gcc?" |
+| Format Nix code | `format_nix` → `lint_nix` | "Format and lint this Nix code: { }" |
+| Create a flake | `generate_flake` | "Generate a flake.nix for a Rust project" |
+
+### Tool Comparison: When to Use What?
+
+#### Running Packages
+
+Different tools for different needs:
+
+| Scenario | Tool | When to Use | Example |
+|----------|------|-------------|---------|
+| Run a package's main binary | `nix_run` | Know exact package name, want to run default binary | "Run hello package" |
+| Run any command | `comma` | Don't know which package provides a command | "Run cowsay with comma" |
+| Run with multiple dependencies | `run_in_shell` | Need custom environment with multiple packages | "Run python script.py with numpy and scipy" |
+| One-off command | `comma` | Fastest for ad-hoc use, auto-discovers package | Interactive testing |
+| Reproducible script | `run_in_shell` | Scripting/automation with explicit dependencies | CI/CD pipelines |
+
+#### Building vs Analyzing
+
+| Goal | Tool | Output |
+|------|------|--------|
+| See what would be built | `nix_build` (dry_run: true) | Build plan without actually building |
+| Actually build a package | `nix_build` (dry_run: false) | Builds and returns store path |
+| Understand dependencies | `why_depends` | Full dependency chain explanation |
+| Check total size | `get_closure_size` | Size including all dependencies |
+| Compare two packages | `diff_derivations` | Differences between derivations |
+| Debug build failure | `get_build_log` | Full build output for debugging |
+
+#### Code Quality
+
+| Task | Tool | Use Case |
+|------|------|----------|
+| Format Nix code | `format_nix` or `nix_fmt` | Standardize code formatting |
+| Lint Nix code | `lint_nix` | Find anti-patterns with statix/deadnix |
+| Validate syntax | `validate_nix` | Check for parse errors before building |
+| Full quality check | `pre_commit_run` | Run all quality checks at once |
+
+### Quick Tips
+
+**Caching is Automatic**: The server caches results to be fast. Package searches, metadata lookups, and build queries all benefit from intelligent caching.
+
+**Validation is Built-in**: All inputs are validated to prevent command injection and other security issues. You can safely pass user input to tools.
+
+**Timeouts are Enforced**: Long-running operations have automatic timeouts to prevent resource exhaustion.
+
+**Audit Logging**: All operations are logged for security and debugging purposes.
+
 ## Installation
 
 ### Prerequisites

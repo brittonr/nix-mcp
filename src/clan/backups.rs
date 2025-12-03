@@ -1,8 +1,6 @@
-use crate::common::security::helpers::{
-    audit_tool_execution, validation_error_to_mcp, with_timeout,
-};
+use crate::common::security::helpers::validation_error_to_mcp;
 use crate::common::security::input_validation::validate_flake_ref;
-use crate::common::security::{validate_machine_name, AuditLogger};
+use crate::common::security::AuditLogger;
 use rmcp::{
     handler::server::wrapper::Parameters, model::*, tool, tool_router, ErrorData as McpError,
 };

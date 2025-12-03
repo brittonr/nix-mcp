@@ -6,7 +6,8 @@
       "Bash(nix develop:*)",
       "Bash(git checkout:*)",
       "Bash(git add:*)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(timeout 3 nix develop:*)"
     ],
     "deny": [],
     "ask": []

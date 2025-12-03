@@ -6,7 +6,6 @@ use rmcp::model::{CallToolResult, Content};
 use rmcp::ErrorData as McpError;
 use rmcp::{tool, tool_router};
 use std::sync::Arc;
-use std::time::Duration;
 
 use super::types::{FlakeMetadataArgs, FlakeShowArgs, PrefetchUrlArgs};
 

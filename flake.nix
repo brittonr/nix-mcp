@@ -34,192 +34,248 @@
     , pre-commit-hooks
     , ...
     }:
-    flake-utils.lib.eachDefaultSystem (
-      system:
-      let
-        pkgs = nixpkgs.legacyPackages.${system};
+    flake-utils.lib.eachDefaultSystem
+      (
+        system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
 
-        inherit (pkgs) lib;
+          inherit (pkgs) lib;
 
-        craneLib = crane.mkLib pkgs;
-        src = craneLib.cleanCargoSource ./.;
+          craneLib = crane.mkLib pkgs;
+          src = craneLib.cleanCargoSource ./.;
 
-        # Pre-commit hooks configuration
-        pre-commit-check = pre-commit-hooks.lib.${system}.run {
-          src = ./.;
-          hooks = {
-            # Rust formatting
-            rustfmt = {
-              enable = true;
-              description = "Format Rust code with cargo fmt";
-            };
+          # Pre-commit hooks configuration
+          pre-commit-check = pre-commit-hooks.lib.${system}.run {
+            src = ./.;
+            hooks = {
+              # Rust formatting
+              rustfmt = {
+                enable = true;
+                description = "Format Rust code with cargo fmt";
+              };
 
-            # Rust linting
-            # Disabled in pre-commit-check to avoid sandbox network access issues
-            # Clippy still runs via checks.onix-mcp-clippy and locally on commits
-            clippy = {
-              enable = false;
-              description = "Lint Rust code with clippy";
-              entry = lib.mkForce "${pkgs.cargo}/bin/cargo clippy --all-targets -- --deny warnings";
-            };
+              # Rust linting
+              # Disabled in pre-commit-check to avoid sandbox network access issues
+              # Clippy still runs via checks.onix-mcp-clippy and locally on commits
+              clippy = {
+                enable = false;
+                description = "Lint Rust code with clippy";
+                entry = lib.mkForce "${pkgs.cargo}/bin/cargo clippy --all-targets -- --deny warnings";
+              };
 
-            # TOML formatting
-            taplo = {
-              enable = true;
-              description = "Format TOML files with taplo";
-            };
+              # TOML formatting
+              taplo = {
+                enable = true;
+                description = "Format TOML files with taplo";
+              };
 
-            # Nix formatting
-            nixpkgs-fmt = {
-              enable = true;
-              description = "Format Nix code with nixpkgs-fmt";
+              # Nix formatting
+              nixpkgs-fmt = {
+                enable = true;
+                description = "Format Nix code with nixpkgs-fmt";
+              };
             };
           };
-        };
 
-        # Common arguments can be set here to avoid repeating them later
-        commonArgs = {
-          inherit src;
-          strictDeps = true;
-
-          buildInputs = [
-            # Add additional build inputs here
-          ]
-          ++ lib.optionals pkgs.stdenv.isDarwin [
-            # Additional darwin specific inputs can be set here
-            pkgs.libiconv
-          ];
-
-          # Additional environment variables can be set directly
-          # MY_CUSTOM_VAR = "some value";
-        };
-
-        # Build *just* the cargo dependencies, so we can reuse
-        # all of that work (e.g. via cachix) when running in CI
-        cargoArtifacts = craneLib.buildDepsOnly commonArgs;
-
-        # Build the actual crate itself, reusing the dependency
-        # artifacts from above.
-        onix-mcp-unwrapped = craneLib.buildPackage (
-          commonArgs
-          // {
-            inherit cargoArtifacts;
-          }
-        );
-
-        # Wrap the binary to include nix-index and other Nix tools in PATH
-        onix-mcp =
-          pkgs.runCommand "onix-mcp"
-            {
-              buildInputs = [ pkgs.makeWrapper ];
-            }
-            ''
-              mkdir -p $out/bin
-              makeWrapper ${onix-mcp-unwrapped}/bin/onix-mcp $out/bin/onix-mcp \
-                --prefix PATH : ${
-                  lib.makeBinPath [
-                    pkgs.nix
-                    pkgs.nix-index
-                    pkgs.comma
-                    pkgs.nix-diff
-                    pkgs.nixpkgs-fmt
-                    pkgs.alejandra
-                    pkgs.statix
-                    pkgs.deadnix
-                    clan-core.packages.${system}.clan-cli
-                  ]
-                }
-            '';
-      in
-      {
-        checks = {
-          # Build the crate as part of `nix flake check` for convenience
-          onix-mcp = onix-mcp;
-
-          # Pre-commit hooks check
-          pre-commit-check = pre-commit-check;
-
-          # Run clippy (and deny all warnings) on the crate source,
-          # again, reusing the dependency artifacts from above.
-          #
-          # Note that this is done as a separate derivation so that
-          # we can block the CI if there are issues here, but not
-          # prevent downstream consumers from building our crate by itself.
-          onix-mcp-clippy = craneLib.cargoClippy (
-            commonArgs
-            // {
-              inherit cargoArtifacts;
-              cargoClippyExtraArgs = "--all-targets -- --deny warnings";
-            }
-          );
-
-          onix-mcp-doc = craneLib.cargoDoc (
-            commonArgs
-            // {
-              inherit cargoArtifacts;
-              # This can be commented out or tweaked as necessary, e.g. set to
-              # `--deny rustdoc::broken-intra-doc-links` to only enforce that lint
-              env.RUSTDOCFLAGS = "--deny warnings";
-            }
-          );
-
-          # Check formatting
-          onix-mcp-fmt = craneLib.cargoFmt {
+          # Common arguments can be set here to avoid repeating them later
+          commonArgs = {
             inherit src;
+            strictDeps = true;
+
+            buildInputs = [
+              # Add additional build inputs here
+            ]
+            ++ lib.optionals pkgs.stdenv.isDarwin [
+              # Additional darwin specific inputs can be set here
+              pkgs.libiconv
+            ];
+
+            # Additional environment variables can be set directly
+            # MY_CUSTOM_VAR = "some value";
           };
 
-          onix-mcp-toml-fmt = craneLib.taploFmt {
-            src = pkgs.lib.sources.sourceFilesBySuffices src [ ".toml" ];
-            # taplo arguments can be further customized below as needed
-            # taploExtraArgs = "--config ./taplo.toml";
-          };
+          # Build *just* the cargo dependencies, so we can reuse
+          # all of that work (e.g. via cachix) when running in CI
+          cargoArtifacts = craneLib.buildDepsOnly commonArgs;
 
-          # Audit dependencies
-          onix-mcp-audit = craneLib.cargoAudit {
-            inherit src advisory-db;
-          };
-
-          # Run tests with cargo-nextest
-          # Consider setting `doCheck = false` on `my-crate` if you do not want
-          # the tests to run twice
-          onix-mcp-nextest = craneLib.cargoNextest (
+          # Build the actual crate itself, reusing the dependency
+          # artifacts from above.
+          onix-mcp-unwrapped = craneLib.buildPackage (
             commonArgs
             // {
               inherit cargoArtifacts;
-              partitions = 1;
-              partitionType = "count";
-              cargoNextestPartitionsExtraArgs = "--no-tests=pass";
             }
           );
+
+          # Wrap the binary to include nix-index and other Nix tools in PATH
+          onix-mcp =
+            pkgs.runCommand "onix-mcp"
+              {
+                buildInputs = [ pkgs.makeWrapper ];
+              }
+              ''
+                mkdir -p $out/bin
+                makeWrapper ${onix-mcp-unwrapped}/bin/onix-mcp $out/bin/onix-mcp \
+                  --prefix PATH : ${
+                    lib.makeBinPath [
+                      pkgs.nix
+                      pkgs.nix-index
+                      pkgs.comma
+                      pkgs.nix-diff
+                      pkgs.nixpkgs-fmt
+                      pkgs.alejandra
+                      pkgs.statix
+                      pkgs.deadnix
+                      pkgs.pueue
+                      clan-core.packages.${system}.clan-cli
+                    ]
+                  }
+              '';
+        in
+        {
+          checks = {
+            # Build the crate as part of `nix flake check` for convenience
+            onix-mcp = onix-mcp;
+
+            # Pre-commit hooks check
+            pre-commit-check = pre-commit-check;
+
+            # Run clippy (and deny all warnings) on the crate source,
+            # again, reusing the dependency artifacts from above.
+            #
+            # Note that this is done as a separate derivation so that
+            # we can block the CI if there are issues here, but not
+            # prevent downstream consumers from building our crate by itself.
+            onix-mcp-clippy = craneLib.cargoClippy (
+              commonArgs
+              // {
+                inherit cargoArtifacts;
+                cargoClippyExtraArgs = "--all-targets -- --deny warnings";
+              }
+            );
+
+            onix-mcp-doc = craneLib.cargoDoc (
+              commonArgs
+              // {
+                inherit cargoArtifacts;
+                # This can be commented out or tweaked as necessary, e.g. set to
+                # `--deny rustdoc::broken-intra-doc-links` to only enforce that lint
+                env.RUSTDOCFLAGS = "--deny warnings";
+              }
+            );
+
+            # Check formatting
+            onix-mcp-fmt = craneLib.cargoFmt {
+              inherit src;
+            };
+
+            onix-mcp-toml-fmt = craneLib.taploFmt {
+              src = pkgs.lib.sources.sourceFilesBySuffices src [ ".toml" ];
+              # taplo arguments can be further customized below as needed
+              # taploExtraArgs = "--config ./taplo.toml";
+            };
+
+            # Audit dependencies
+            onix-mcp-audit = craneLib.cargoAudit {
+              inherit src advisory-db;
+            };
+
+            # Run tests with cargo-nextest
+            # Consider setting `doCheck = false` on `my-crate` if you do not want
+            # the tests to run twice
+            onix-mcp-nextest = craneLib.cargoNextest (
+              commonArgs
+              // {
+                inherit cargoArtifacts;
+                partitions = 1;
+                partitionType = "count";
+                cargoNextestPartitionsExtraArgs = "--no-tests=pass";
+              }
+            );
+
+            # Check licenses and security advisories with cargo-deny
+            onix-mcp-deny = craneLib.mkCargoDerivation {
+              inherit cargoArtifacts src;
+              buildPhaseCargoCommand = "cargo deny check";
+              nativeBuildInputs = [ pkgs.cargo-deny ];
+            };
+          };
+
+          packages = {
+            default = onix-mcp;
+          };
+
+          apps.default = flake-utils.lib.mkApp {
+            drv = onix-mcp;
+          };
+
+          devShells.default = craneLib.devShell {
+            # Inherit inputs from checks.
+            checks = self.checks.${system};
+
+            # Additional dev-shell environment variables can be set directly
+            # MY_CUSTOM_DEVELOPMENT_VAR = "something else";
+
+            # Extra inputs can be added here; cargo and rustc are provided by default.
+            packages = [
+              # pkgs.ripgrep
+              pkgs.gemini-cli
+              pkgs.codex
+              pkgs.nix-index
+              pkgs.comma
+            ];
+
+            # Install pre-commit hooks when entering the shell
+            inherit (pre-commit-check) shellHook;
+          };
+        }
+      ) // {
+      # NixOS module for system-wide deployment
+      nixosModules.default = import ./nix/module.nix;
+      nixosModules.onix-mcp = import ./nix/module.nix;
+
+      # Flake templates for easy project initialization
+      templates = {
+        clan-basic = {
+          path = ./templates/clan-basic;
+          description = "Basic Clan machine configuration with onix-mcp";
+          welcomeText = ''
+            # Basic Clan Infrastructure with Onix-MCP
+
+            You've initialized a basic Clan configuration with onix-mcp enabled.
+
+            Next steps:
+            1. Update flake.nix with your repository URL and SSH keys
+            2. Run 'nix develop' to enter the development shell
+            3. Run 'clan machines list' to see available machines
+            4. Run 'clan machines update example-machine' to deploy
+
+            See README.md for detailed documentation.
+          '';
         };
 
-        packages = {
-          default = onix-mcp;
+        clan-infrastructure = {
+          path = ./templates/clan-infrastructure;
+          description = "Multi-machine Clan infrastructure with onix-mcp";
+          welcomeText = ''
+            # Multi-Machine Clan Infrastructure with Onix-MCP
+
+            You've initialized a production-ready multi-machine infrastructure:
+            - web-01: Web server with nginx
+            - db-01: Database server with PostgreSQL
+            - monitor-01: Monitoring with Grafana + Prometheus
+            - dev-01: Development machine
+
+            Next steps:
+            1. Update flake.nix with your repository URL and target hosts
+            2. Run 'nix develop' to enter the development shell
+            3. Run 'clan machines list' to see all machines
+            4. Run 'clan machines update <machine-name>' to deploy
+
+            See README.md for detailed documentation and customization options.
+          '';
         };
-
-        apps.default = flake-utils.lib.mkApp {
-          drv = onix-mcp;
-        };
-
-        devShells.default = craneLib.devShell {
-          # Inherit inputs from checks.
-          checks = self.checks.${system};
-
-          # Additional dev-shell environment variables can be set directly
-          # MY_CUSTOM_DEVELOPMENT_VAR = "something else";
-
-          # Extra inputs can be added here; cargo and rustc are provided by default.
-          packages = [
-            # pkgs.ripgrep
-            pkgs.gemini-cli
-            pkgs.codex
-            pkgs.nix-index
-            pkgs.comma
-          ];
-
-          # Install pre-commit hooks when entering the shell
-          inherit (pre-commit-check) shellHook;
-        };
-      }
-    );
+      };
+    };
 }
