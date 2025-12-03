@@ -62,7 +62,7 @@ impl CommandResult {
 
 /// Builder for executing commands with common patterns
 pub struct CommandExecutor {
-    audit: Arc<AuditLogger>,
+    pub audit: Arc<AuditLogger>,
 }
 
 impl CommandExecutor {

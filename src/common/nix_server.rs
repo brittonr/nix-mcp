@@ -601,99 +601,99 @@ impl NixServer {
         &self,
         Parameters(SearchPackagesArgs { query, limit }): Parameters<SearchPackagesArgs>,
     ) -> Result<CallToolResult, McpError> {
+        use crate::common::caching::CachedExecutor;
         use crate::common::security::helpers::{audit_tool_execution, with_timeout};
 
         // Validate query input
         validate_package_name(&query).map_err(validation_error_to_mcp)?;
 
-        // Create cache key including limit
-        let cache_key = format!("{}:{}", query, limit.unwrap_or(10));
+        // Use cached executor with formatted cache key
+        let cached_executor = CachedExecutor::new(self.search_cache.clone());
+        let audit = self.audit.clone();
+        let query_clone = query.clone();
+        let limit_value = limit.unwrap_or(10);
 
-        // Check cache first
-        if let Some(cached_result) = self.search_cache.get(&cache_key) {
-            return Ok(CallToolResult::success(vec![Content::text(cached_result)]));
-        }
+        cached_executor
+            .execute_with_formatted_cache(
+                vec![query.clone(), limit_value.to_string()],
+                || async move {
+                    let audit_inner = audit.clone();
+                    // Execute with security features (audit logging + timeout)
+                    audit_tool_execution(
+                        &audit,
+                        "search_packages",
+                        Some(serde_json::json!({"query": &query_clone})),
+                        || async move {
+                            with_timeout(&audit_inner, "search_packages", 30, || async {
+                                // Use nix search command
+                                let output = tokio::process::Command::new("nix")
+                                    .args(["search", "nixpkgs", &query_clone, "--json"])
+                                    .output()
+                                    .await
+                                    .map_err(|e| {
+                                        McpError::internal_error(
+                                            format!("Failed to execute nix search: {}", e),
+                                            None,
+                                        )
+                                    })?;
 
-        // Execute with security features (audit logging + timeout)
-        let search_cache = self.search_cache.clone();
-        let cache_key_clone = cache_key.clone();
+                                if !output.status.success() {
+                                    let stderr = String::from_utf8_lossy(&output.stderr);
+                                    return Err(McpError::internal_error(
+                                        format!("nix search failed: {}", stderr),
+                                        None,
+                                    ));
+                                }
 
-        audit_tool_execution(
-            &self.audit,
-            "search_packages",
-            Some(serde_json::json!({"query": &query})),
-            || async move {
-                with_timeout(&self.audit, "search_packages", 30, || async {
-                    let limit = limit.unwrap_or(10);
+                                let stdout = String::from_utf8_lossy(&output.stdout);
+                                let results: serde_json::Value = serde_json::from_str(&stdout)
+                                    .map_err(|e| {
+                                        McpError::internal_error(
+                                            format!("Failed to parse search results: {}", e),
+                                            None,
+                                        )
+                                    })?;
 
-                    // Use nix search command
-                    let output = tokio::process::Command::new("nix")
-                        .args(["search", "nixpkgs", &query, "--json"])
-                        .output()
-                        .await
-                        .map_err(|e| {
-                            McpError::internal_error(
-                                format!("Failed to execute nix search: {}", e),
-                                None,
-                            )
-                        })?;
+                                // Format results nicely
+                                let mut formatted_results = Vec::new();
+                                if let Some(obj) = results.as_object() {
+                                    for (i, (pkg_path, info)) in obj.iter().enumerate() {
+                                        if i >= limit_value {
+                                            break;
+                                        }
 
-                    if !output.status.success() {
-                        let stderr = String::from_utf8_lossy(&output.stderr);
-                        return Err(McpError::internal_error(
-                            format!("nix search failed: {}", stderr),
-                            None,
-                        ));
-                    }
+                                        let description = info["description"]
+                                            .as_str()
+                                            .unwrap_or("No description");
+                                        let version = info["version"].as_str().unwrap_or("unknown");
 
-                    let stdout = String::from_utf8_lossy(&output.stdout);
-                    let results: serde_json::Value =
-                        serde_json::from_str(&stdout).map_err(|e| {
-                            McpError::internal_error(
-                                format!("Failed to parse search results: {}", e),
-                                None,
-                            )
-                        })?;
+                                        formatted_results.push(format!(
+                                            "Package: {}\nVersion: {}\nDescription: {}\n",
+                                            pkg_path, version, description
+                                        ));
+                                    }
+                                }
 
-                    // Format results nicely
-                    let mut formatted_results = Vec::new();
-                    if let Some(obj) = results.as_object() {
-                        for (i, (pkg_path, info)) in obj.iter().enumerate() {
-                            if i >= limit {
-                                break;
-                            }
+                                let result_text = if formatted_results.is_empty() {
+                                    format!("No packages found matching '{}'", query_clone)
+                                } else {
+                                    format!(
+                                        "Found {} packages matching '{}':\n\n{}",
+                                        formatted_results.len(),
+                                        query_clone,
+                                        formatted_results.join("\n")
+                                    )
+                                };
 
-                            let description =
-                                info["description"].as_str().unwrap_or("No description");
-                            let version = info["version"].as_str().unwrap_or("unknown");
-
-                            formatted_results.push(format!(
-                                "Package: {}\nVersion: {}\nDescription: {}\n",
-                                pkg_path, version, description
-                            ));
-                        }
-                    }
-
-                    let result_text = if formatted_results.is_empty() {
-                        format!("No packages found matching '{}'", query)
-                    } else {
-                        format!(
-                            "Found {} packages matching '{}':\n\n{}",
-                            formatted_results.len(),
-                            query,
-                            formatted_results.join("\n")
-                        )
-                    };
-
-                    // Cache the result
-                    search_cache.insert(cache_key_clone, result_text.clone());
-
-                    Ok(CallToolResult::success(vec![Content::text(result_text)]))
-                })
-                .await
-            },
-        )
-        .await
+                                Ok(result_text)
+                            })
+                            .await
+                        },
+                    )
+                    .await
+                },
+            )
+            .await
     }
 
     #[tool(
@@ -820,57 +820,55 @@ impl NixServer {
         &self,
         Parameters(NixEvalArgs { expression }): Parameters<NixEvalArgs>,
     ) -> Result<CallToolResult, McpError> {
+        use crate::common::caching::CachedExecutor;
         use crate::common::security::helpers::{audit_tool_execution, with_timeout};
         use crate::common::security::validate_nix_expression;
 
         // Validate Nix expression for dangerous patterns
         validate_nix_expression(&expression).map_err(validation_error_to_mcp)?;
 
-        // Check cache first
-        if let Some(cached_result) = self.eval_cache.get(&expression) {
-            return Ok(CallToolResult::success(vec![Content::text(cached_result)]));
-        }
-
-        // Execute with security features (audit logging + 30s timeout for eval)
-        let eval_cache = self.eval_cache.clone();
+        // Use cached executor for cache-check-execute-cache pattern
+        let cached_executor = CachedExecutor::new(self.eval_cache.clone());
+        let audit = self.audit.clone();
         let expression_clone = expression.clone();
 
-        audit_tool_execution(
-            &self.audit,
-            "nix_eval",
-            Some(serde_json::json!({"expression_length": expression.len()})),
-            || async move {
-                with_timeout(&self.audit, "nix_eval", 30, || async {
-                    let output = tokio::process::Command::new("nix")
-                        .args(["eval", "--expr", &expression])
-                        .output()
+        cached_executor
+            .execute_with_string_cache(expression.clone(), || async move {
+                let audit_inner = audit.clone();
+                // Execute with security features (audit logging + 30s timeout for eval)
+                audit_tool_execution(
+                    &audit,
+                    "nix_eval",
+                    Some(serde_json::json!({"expression_length": expression_clone.len()})),
+                    || async move {
+                        with_timeout(&audit_inner, "nix_eval", 30, || async {
+                            let output = tokio::process::Command::new("nix")
+                                .args(["eval", "--expr", &expression_clone])
+                                .output()
+                                .await
+                                .map_err(|e| {
+                                    McpError::internal_error(
+                                        format!("Failed to execute nix eval: {}", e),
+                                        None,
+                                    )
+                                })?;
+
+                            if !output.status.success() {
+                                let stderr = String::from_utf8_lossy(&output.stderr);
+                                return Err(McpError::internal_error(
+                                    format!("Evaluation failed: {}", stderr),
+                                    None,
+                                ));
+                            }
+
+                            Ok(String::from_utf8_lossy(&output.stdout).to_string())
+                        })
                         .await
-                        .map_err(|e| {
-                            McpError::internal_error(
-                                format!("Failed to execute nix eval: {}", e),
-                                None,
-                            )
-                        })?;
-
-                    if !output.status.success() {
-                        let stderr = String::from_utf8_lossy(&output.stderr);
-                        return Err(McpError::internal_error(
-                            format!("Evaluation failed: {}", stderr),
-                            None,
-                        ));
-                    }
-
-                    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-
-                    // Cache the result
-                    eval_cache.insert(expression_clone, stdout.clone());
-
-                    Ok(CallToolResult::success(vec![Content::text(stdout)]))
-                })
+                    },
+                )
                 .await
-            },
-        )
-        .await
+            })
+            .await
     }
 
     #[tool(
